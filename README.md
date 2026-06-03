@@ -122,7 +122,6 @@ API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` 
 ### Package configs (shipped with ApplyPilot)
 - `config/employers.yaml` - Workday employer registry (48 preconfigured)
 - `config/sites.yaml` - Direct career sites (30+), blocked sites, base URLs, manual ATS domains
-- `config/searches.example.yaml` - Example search configuration
 
 ---
 

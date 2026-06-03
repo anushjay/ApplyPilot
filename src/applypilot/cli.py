@@ -372,7 +372,7 @@ def doctor(
     if SEARCH_CONFIG_PATH.exists():
         results.append(("searches.yaml", ok_mark, str(SEARCH_CONFIG_PATH)))
     else:
-        results.append(("searches.yaml", warn_mark, "Will use example config — run 'applypilot init'"))
+        results.append(("searches.yaml", fail_mark, "Run 'applypilot init' to create"))
 
     # jobspy (discovery dep installed separately)
     try:

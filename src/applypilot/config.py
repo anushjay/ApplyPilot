@@ -105,10 +105,6 @@ def load_search_config() -> dict:
     """Load search configuration from ~/.applypilot/searches.yaml."""
     import yaml
     if not SEARCH_CONFIG_PATH.exists():
-        # Fall back to package-shipped example
-        example = CONFIG_DIR / "searches.example.yaml"
-        if example.exists():
-            return yaml.safe_load(example.read_text(encoding="utf-8"))
         return {}
     return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
 
@@ -125,8 +121,7 @@ def load_sites_config() -> dict:
 def job_board_sites(search_cfg: dict) -> list[str] | None:
     """Return JobSpy board names from search config.
 
-    Historically the example config used ``boards`` while discovery read
-    ``sites``. Accept both so existing user configs keep working.
+    Accept both ``boards`` and ``sites`` so existing user configs keep working.
     """
     sites = search_cfg.get("sites")
     if sites is not None:
@@ -137,8 +132,7 @@ def job_board_sites(search_cfg: dict) -> list[str] | None:
 def location_filters(search_cfg: dict) -> tuple[list[str], list[str]]:
     """Return accepted and rejected location patterns from search config.
 
-    The current example config nests these under ``location`` while older
-    discovery code used flat keys. Accept both formats.
+    Accept both nested ``location`` config and older flat keys.
     """
     location_cfg = search_cfg.get("location", {}) or {}
     accept = search_cfg.get("location_accept")
@@ -148,6 +142,20 @@ def location_filters(search_cfg: dict) -> tuple[list[str], list[str]]:
     if reject is None:
         reject = location_cfg.get("reject_patterns", [])
     return accept, reject
+
+
+def discovery_sources(search_cfg: dict) -> dict[str, bool]:
+    """Return enabled discovery source flags.
+
+    Defaults preserve the historical behavior: all discovery sources run
+    unless explicitly disabled in ``searches.yaml``.
+    """
+    raw = search_cfg.get("discovery_sources", {}) or {}
+    return {
+        "jobspy": bool(raw.get("jobspy", True)),
+        "workday": bool(raw.get("workday", True)),
+        "smart_extract": bool(raw.get("smart_extract", raw.get("smartextract", True))),
+    }
 
 
 def is_manual_ats(url: str | None) -> bool:

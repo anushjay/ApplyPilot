@@ -54,3 +54,37 @@ def test_location_filters_prefers_flat_legacy_keys():
     }
 
     assert config.location_filters(search_cfg) == (["Bay Area"], ["New York only"])
+
+
+def test_discovery_sources_default_to_all_enabled():
+    from applypilot import config
+
+    assert config.discovery_sources({}) == {
+        "jobspy": True,
+        "workday": True,
+        "smart_extract": True,
+    }
+
+
+def test_discovery_sources_can_disable_workday_and_smart_extract():
+    from applypilot import config
+
+    search_cfg = {
+        "discovery_sources": {
+            "jobspy": True,
+            "workday": False,
+            "smart_extract": False,
+        }
+    }
+
+    assert config.discovery_sources(search_cfg) == {
+        "jobspy": True,
+        "workday": False,
+        "smart_extract": False,
+    }
+
+
+def test_discovery_sources_accepts_legacy_smartextract_key():
+    from applypilot import config
+
+    assert config.discovery_sources({"discovery_sources": {"smartextract": False}})["smart_extract"] is False

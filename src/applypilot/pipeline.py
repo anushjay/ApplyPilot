@@ -62,39 +62,54 @@ _UPSTREAM: dict[str, str | None] = {
 def _run_discover(workers: int = 1) -> dict:
     """Stage: Job discovery — JobSpy, Workday, and smart-extract scrapers."""
     stats: dict = {"jobspy": None, "workday": None, "smartextract": None}
+    from applypilot import config
+    search_cfg = config.load_search_config()
+    sources = config.discovery_sources(search_cfg)
 
     # JobSpy
-    console.print("  [cyan]JobSpy full crawl...[/cyan]")
-    try:
-        from applypilot.discovery.jobspy import run_discovery
-        run_discovery()
-        stats["jobspy"] = "ok"
-    except Exception as e:
-        log.error("JobSpy crawl failed: %s", e)
-        console.print(f"  [red]JobSpy error:[/red] {e}")
-        stats["jobspy"] = f"error: {e}"
+    if sources["jobspy"]:
+        console.print("  [cyan]JobSpy full crawl...[/cyan]")
+        try:
+            from applypilot.discovery.jobspy import run_discovery
+            run_discovery(search_cfg)
+            stats["jobspy"] = "ok"
+        except Exception as e:
+            log.error("JobSpy crawl failed: %s", e)
+            console.print(f"  [red]JobSpy error:[/red] {e}")
+            stats["jobspy"] = f"error: {e}"
+    else:
+        console.print("  [dim]JobSpy full crawl skipped by discovery_sources.jobspy=false[/dim]")
+        stats["jobspy"] = "skipped"
 
     # Workday corporate scraper
-    console.print("  [cyan]Workday corporate scraper...[/cyan]")
-    try:
-        from applypilot.discovery.workday import run_workday_discovery
-        run_workday_discovery(workers=workers)
-        stats["workday"] = "ok"
-    except Exception as e:
-        log.error("Workday scraper failed: %s", e)
-        console.print(f"  [red]Workday error:[/red] {e}")
-        stats["workday"] = f"error: {e}"
+    if sources["workday"]:
+        console.print("  [cyan]Workday corporate scraper...[/cyan]")
+        try:
+            from applypilot.discovery.workday import run_workday_discovery
+            run_workday_discovery(workers=workers)
+            stats["workday"] = "ok"
+        except Exception as e:
+            log.error("Workday scraper failed: %s", e)
+            console.print(f"  [red]Workday error:[/red] {e}")
+            stats["workday"] = f"error: {e}"
+    else:
+        console.print("  [dim]Workday corporate scraper skipped by discovery_sources.workday=false[/dim]")
+        stats["workday"] = "skipped"
 
     # Smart extract
-    console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
-    try:
-        from applypilot.discovery.smartextract import run_smart_extract
-        run_smart_extract(workers=workers)
-        stats["smartextract"] = "ok"
-    except Exception as e:
-        log.error("Smart extract failed: %s", e)
-        console.print(f"  [red]Smart extract error:[/red] {e}")
-        stats["smartextract"] = f"error: {e}"
+    if sources["smart_extract"]:
+        console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
+        try:
+            from applypilot.discovery.smartextract import run_smart_extract
+            run_smart_extract(workers=workers)
+            stats["smartextract"] = "ok"
+        except Exception as e:
+            log.error("Smart extract failed: %s", e)
+            console.print(f"  [red]Smart extract error:[/red] {e}")
+            stats["smartextract"] = f"error: {e}"
+    else:
+        console.print("  [dim]Smart extract skipped by discovery_sources.smart_extract=false[/dim]")
+        stats["smartextract"] = "skipped"
 
     return stats
 
