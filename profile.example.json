@@ -6,9 +6,9 @@
     "password": "YOUR_JOB_SITE_PASSWORD",
     "phone": "555-123-4567",
     "address": "123 Main St",
-    "city": "Your City",
-    "province_state": "Your State/Province",
-    "country": "Your Country",
+    "city": "San Francisco",
+    "province_state": "CA",
+    "country": "USA",
     "postal_code": "A1B 2C3",
     "linkedin_url": "https://www.linkedin.com/in/yourprofile",
     "github_url": "https://github.com/yourusername",
@@ -37,7 +37,7 @@
     "education_level": "Bachelor's Degree",
     "current_job_title": "",
     "current_company": "",
-    "target_role": "software engineer"
+    "target_role": "Technology Partnerships, AI Partnerships, VP of Partnerships, Partner Platforms, Director of Partnerships, Product Partnerships, Director of AI Solutions"
   },
   "skills_boundary": {
     "languages": ["Python", "SQL", "JavaScript"],
