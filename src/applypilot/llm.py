@@ -33,6 +33,8 @@ def _detect_provider() -> tuple[str, str, str]:
     model_override = os.environ.get("LLM_MODEL", "")
 
     if gemini_key and not local_url:
+        from applypilot import config
+        config.require_cloud_llm_allowed("Gemini")
         return (
             "https://generativelanguage.googleapis.com/v1beta/openai",
             model_override or "gemini-2.0-flash",
@@ -40,6 +42,8 @@ def _detect_provider() -> tuple[str, str, str]:
         )
 
     if openai_key and not local_url:
+        from applypilot import config
+        config.require_cloud_llm_allowed("OpenAI")
         return (
             "https://api.openai.com/v1",
             model_override or "gpt-4o-mini",
@@ -207,7 +211,7 @@ class LLMClient:
 
                 return self._chat_compat(messages, temperature, max_tokens)
 
-            except _GeminiCompatForbidden as exc:
+            except _GeminiCompatForbidden:
                 # Model not available on OpenAI-compat layer — switch to native.
                 log.warning(
                     "Gemini compat endpoint returned 403 for model '%s'. "

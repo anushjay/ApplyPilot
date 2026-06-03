@@ -13,7 +13,6 @@ import json
 import shutil
 from pathlib import Path
 
-import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
@@ -26,6 +25,7 @@ from applypilot.config import (
     RESUME_PDF_PATH,
     SEARCH_CONFIG_PATH,
     ensure_dirs,
+    secure_write_text,
 )
 
 console = Console()
@@ -175,7 +175,7 @@ def _setup_profile() -> dict:
     }
 
     # Save
-    PROFILE_PATH.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
+    secure_write_text(PROFILE_PATH, json.dumps(profile, indent=2, ensure_ascii=False))
     console.print(f"\n[green]Profile saved to {PROFILE_PATH}[/green]")
     return profile
 
@@ -225,7 +225,7 @@ def _setup_searches() -> None:
         lines.append(f'  - query: "{role}"')
         lines.append(f"    tier: {min(i + 1, 3)}")
 
-    SEARCH_CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    secure_write_text(SEARCH_CONFIG_PATH, "\n".join(lines) + "\n")
     console.print(f"[green]Search config saved to {SEARCH_CONFIG_PATH}[/green]")
 
 
@@ -271,7 +271,7 @@ def _setup_ai_features() -> None:
         env_lines.append(f"LLM_MODEL={model}")
 
     env_lines.append("")
-    ENV_PATH.write_text("\n".join(env_lines), encoding="utf-8")
+    secure_write_text(ENV_PATH, "\n".join(env_lines))
     console.print(f"[green]AI configuration saved to {ENV_PATH}[/green]")
 
 
@@ -309,12 +309,12 @@ def _setup_auto_apply() -> None:
         if ENV_PATH.exists():
             existing = ENV_PATH.read_text(encoding="utf-8")
             if "CAPSOLVER_API_KEY" not in existing:
-                ENV_PATH.write_text(
+                secure_write_text(
+                    ENV_PATH,
                     existing.rstrip() + f"\nCAPSOLVER_API_KEY={capsolver_key}\n",
-                    encoding="utf-8",
                 )
         else:
-            ENV_PATH.write_text(f"# ApplyPilot configuration\nCAPSOLVER_API_KEY={capsolver_key}\n", encoding="utf-8")
+            secure_write_text(ENV_PATH, f"# ApplyPilot configuration\nCAPSOLVER_API_KEY={capsolver_key}\n")
         console.print("[green]CapSolver key saved.[/green]")
     else:
         console.print("[dim]Skipped. Add CAPSOLVER_API_KEY to .env later if needed.[/dim]")

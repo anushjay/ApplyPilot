@@ -25,7 +25,7 @@ from rich.live import Live
 
 from applypilot import config
 from applypilot.database import get_connection
-from applypilot.apply import chrome, dashboard, prompt as prompt_mod
+from applypilot.apply import prompt as prompt_mod
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
     reset_worker_dir, cleanup_on_exit, _kill_process_tree,
@@ -65,22 +65,38 @@ if platform.system() != "Windows":
 
 def _make_mcp_config(cdp_port: int) -> dict:
     """Build MCP config dict for a specific CDP port."""
-    return {
+    servers = {
         "mcpServers": {
             "playwright": {
                 "command": "npx",
                 "args": [
-                    "@playwright/mcp@latest",
+                    f"@playwright/mcp@{config.DEFAULTS['playwright_mcp_version']}",
                     f"--cdp-endpoint=http://localhost:{cdp_port}",
                     f"--viewport-size={config.DEFAULTS['viewport']}",
                 ],
-            },
-            "gmail": {
-                "command": "npx",
-                "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
-            },
+            }
         }
     }
+    if config.gmail_mcp_enabled():
+        servers["mcpServers"]["gmail"] = {
+            "command": "npx",
+            "args": ["-y", f"@gongrzhe/server-gmail-autoauth-mcp@{config.DEFAULTS['gmail_mcp_version']}"],
+        }
+    return servers
+
+
+GMAIL_DISALLOWED_TOOLS = (
+    "mcp__gmail__send_email,mcp__gmail__draft_email,mcp__gmail__modify_email,"
+    "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
+    "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
+    "mcp__gmail__create_label,mcp__gmail__update_label,"
+    "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
+    "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
+    "mcp__gmail__list_filters,mcp__gmail__get_filter,"
+    "mcp__gmail__delete_filter,mcp__gmail__list_emails,"
+    "mcp__gmail__mark_email_read,mcp__gmail__mark_email_unread,"
+    "mcp__gmail__move_email"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +141,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 params.extend(blocked_sites)
             url_clauses = ""
             if blocked_patterns:
-                url_clauses = " ".join(f"AND url NOT LIKE ?" for _ in blocked_patterns)
+                url_clauses = " ".join("AND url NOT LIKE ?" for _ in blocked_patterns)
                 params.extend(blocked_patterns)
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
@@ -237,12 +253,13 @@ def gen_prompt(target_url: str, min_score: int = 7,
     config.ensure_dirs()
     site_slug = (job.get("site") or "unknown")[:20].replace(" ", "_")
     prompt_file = config.LOG_DIR / f"prompt_{site_slug}_{job['title'][:30].replace(' ', '_')}.txt"
-    prompt_file.write_text(prompt, encoding="utf-8")
+    profile = config.load_profile()
+    config.secure_write_text(prompt_file, config.redact_sensitive(prompt, profile))
 
     # Write MCP config for reference
     port = BASE_CDP_PORT + worker_id
     mcp_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
-    mcp_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
+    config.secure_write_text(mcp_path, json.dumps(_make_mcp_config(port), indent=2))
 
     return prompt_file
 
@@ -311,15 +328,17 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         resume_text = txt_path.read_text(encoding="utf-8")
 
     # Build the prompt
+    config.require_cloud_llm_allowed("Claude Code auto-apply")
     agent_prompt = prompt_mod.build_prompt(
         job=job,
         tailored_resume=resume_text,
         dry_run=dry_run,
     )
+    profile = config.load_profile()
 
     # Write per-worker MCP config
     mcp_config_path = config.APP_DIR / f".mcp-apply-{worker_id}.json"
-    mcp_config_path.write_text(json.dumps(_make_mcp_config(port)), encoding="utf-8")
+    config.secure_write_text(mcp_config_path, json.dumps(_make_mcp_config(port), indent=2))
 
     # Build claude command
     cmd = [
@@ -329,16 +348,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         "--mcp-config", str(mcp_config_path),
         "--permission-mode", "bypassPermissions",
         "--no-session-persistence",
-        "--disallowedTools", (
-            "mcp__gmail__draft_email,mcp__gmail__modify_email,"
-            "mcp__gmail__delete_email,mcp__gmail__download_attachment,"
-            "mcp__gmail__batch_modify_emails,mcp__gmail__batch_delete_emails,"
-            "mcp__gmail__create_label,mcp__gmail__update_label,"
-            "mcp__gmail__delete_label,mcp__gmail__get_or_create_label,"
-            "mcp__gmail__list_email_labels,mcp__gmail__create_filter,"
-            "mcp__gmail__list_filters,mcp__gmail__get_filter,"
-            "mcp__gmail__delete_filter"
-        ),
+        "--disallowedTools", GMAIL_DISALLOWED_TOOLS,
         "--output-format", "stream-json",
         "--verbose", "-",
     ]
@@ -401,8 +411,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                         for block in msg.get("message", {}).get("content", []):
                             bt = block.get("type")
                             if bt == "text":
-                                text_parts.append(block["text"])
-                                lf.write(block["text"] + "\n")
+                                text = config.redact_sensitive(block["text"], profile)
+                                text_parts.append(text)
+                                lf.write(text + "\n")
                             elif bt == "tool_use":
                                 name = (
                                     block.get("name", "")
@@ -436,8 +447,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                             "cost_usd": msg.get("total_cost_usd", 0),
                             "turns": msg.get("num_turns", 0),
                         }
-                        text_parts.append(msg.get("result", ""))
+                        text_parts.append(config.redact_sensitive(msg.get("result", ""), profile))
                 except json.JSONDecodeError:
+                    line = config.redact_sensitive(line, profile)
                     text_parts.append(line)
                     lf.write(line + "\n")
 
@@ -454,7 +466,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         job_log = config.LOG_DIR / f"claude_{ts}_w{worker_id}_{job.get('site', 'unknown')[:20]}.txt"
-        job_log.write_text(output, encoding="utf-8")
+        config.secure_write_text(job_log, config.redact_sensitive(output, profile))
 
         if stats:
             cost = stats.get("cost_usd", 0)

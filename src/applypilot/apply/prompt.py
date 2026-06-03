@@ -196,7 +196,6 @@ def _build_hard_rules(profile: dict) -> str:
     display_name = f"{preferred_name} {preferred_last}".strip() if preferred_last else preferred_name
 
     # Build work auth rule dynamically
-    auth_info = work_auth.get("legally_authorized_to_work", "")
     sponsorship = work_auth.get("require_sponsorship", "")
     permit_type = work_auth.get("work_permit_type", "")
 
@@ -223,9 +222,16 @@ def _build_captcha_section() -> str:
     config.load_env()
     capsolver_key = os.environ.get("CAPSOLVER_API_KEY", "")
 
+    if not config.capsolver_enabled() or not capsolver_key:
+        return """== CAPTCHA ==
+CapSolver is disabled. Do not call any CAPTCHA-solving API.
+
+Run CAPTCHA DETECT after navigation, Apply/Submit/Login clicks, or when a page feels stuck.
+If any CAPTCHA is present, output RESULT:CAPTCHA. Do not attempt visual puzzle solving, token injection, or external API calls."""
+
     return f"""== CAPTCHA ==
 You solve CAPTCHAs via the CapSolver REST API. No browser extension. You control the entire flow.
-API key: {capsolver_key or 'NOT CONFIGURED — skip to MANUAL FALLBACK for all CAPTCHAs'}
+API key: {capsolver_key}
 API base: https://api.capsolver.com
 
 CRITICAL RULE: When ANY CAPTCHA appears (hCaptcha, reCAPTCHA, Turnstile -- regardless of what it looks like visually), you MUST:
@@ -455,6 +461,10 @@ def build_prompt(job: dict, tailored_resume: str,
     dest_dir.mkdir(parents=True, exist_ok=True)
     upload_pdf = dest_dir / f"{name_slug}_Resume.pdf"
     shutil.copy(str(src_pdf), str(upload_pdf))
+    try:
+        upload_pdf.chmod(0o600)
+    except OSError:
+        pass
     pdf_path = str(upload_pdf)
 
     # --- Cover letter handling ---
@@ -474,6 +484,10 @@ def build_prompt(job: dict, tailored_resume: str,
         if cl_pdf_src.exists():
             cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
             shutil.copy(str(cl_pdf_src), str(cl_upload))
+            try:
+                cl_upload.chmod(0o600)
+            except OSError:
+                pass
             cl_upload_path = str(cl_upload)
 
     # --- Build all prompt sections ---
@@ -501,11 +515,11 @@ def build_prompt(job: dict, tailored_resume: str,
     # SSO domains the agent cannot sign into (loaded from config/sites.yaml)
     from applypilot.config import load_blocked_sso
     blocked_sso = load_blocked_sso()
-
-    # Preferred display name
-    preferred_name = personal.get("preferred_name", full_name.split()[0])
-    last_name = full_name.split()[-1] if " " in full_name else ""
-    display_name = f"{preferred_name} {last_name}".strip()
+    email_verification_instruction = (
+        "Need email verification? Use search_emails + read_email to get the code."
+        if config.gmail_mcp_enabled()
+        else "Need email verification? Gmail access is disabled. Output RESULT:FAILED:login_issue."
+    )
 
     # Dry-run: override submit instruction
     if dry_run:
@@ -562,16 +576,15 @@ If something unexpected happens and these instructions don't cover it, figure it
 2. browser_snapshot to read the page. Then run CAPTCHA DETECT (see CAPTCHA section). If a CAPTCHA is found, solve it before continuing.
 3. LOCATION CHECK. Read the page for location info. If not eligible, output RESULT and stop.
 4. Find and click the Apply button. If email-only (page says "email resume to X"):
-   - send_email with subject "Application for {job['title']} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]
-   - Output RESULT:APPLIED. Done.
+   - Output RESULT:FAILED:email_only_manual. Do not send email from this agent.
    After clicking Apply: browser_snapshot. Run CAPTCHA DETECT -- many sites trigger CAPTCHAs right after the Apply click. If found, solve before continuing.
 5. Login wall?
    5a. FIRST: check the URL. If you landed on {', '.join(blocked_sso)}, or any SSO/OAuth page -> STOP. Output RESULT:FAILED:sso_required. Do NOT try to sign in to Google/Microsoft/SSO.
    5b. Check for popups. Run browser_tabs action "list". If a new tab/window appeared (login popup), switch to it with browser_tabs action "select". Check the URL there too -- if it's SSO -> RESULT:FAILED:sso_required.
-   5c. Regular login form (employer's own site)? Try sign in: {personal['email']} / {personal.get('password', '')}
+   5c. Regular login form (employer's own site)? Do NOT use or request stored passwords. Try sign up with the email address if the site supports passwordless or email-code flow.
    5d. After clicking Login/Sign-in: run CAPTCHA DETECT. Login pages frequently have invisible CAPTCHAs that silently block form submissions. If found, solve it then retry login.
-   5e. Sign in failed? Try sign up with same email and password.
-   5f. Need email verification? Use search_emails + read_email to get the code.
+   5e. Sign in failed or a password is required? Output RESULT:FAILED:login_issue. Do not expose, infer, or reset passwords.
+   5f. {email_verification_instruction}
    5g. After login, run browser_tabs action "list" again. Switch back to the application tab if needed.
    5h. All failed? Output RESULT:FAILED:login_issue. Do not loop.
 6. Upload resume. ALWAYS upload fresh -- delete any existing resume first, then browser_file_upload with the PDF path above. This is the tailored resume for THIS job. Non-negotiable.

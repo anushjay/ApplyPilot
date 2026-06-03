@@ -211,7 +211,7 @@ def apply(
             raise typer.Exit(code=1)
 
     if gen:
-        from applypilot.apply.launcher import gen_prompt, BASE_CDP_PORT
+        from applypilot.apply.launcher import gen_prompt
         target = url or ""
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
@@ -222,7 +222,7 @@ def apply(
             raise typer.Exit(code=1)
         mcp_path = _profile_path.parent / ".mcp-apply-0.json"
         console.print(f"[green]Wrote prompt to:[/green] {prompt_file}")
-        console.print(f"\n[bold]Run manually:[/bold]")
+        console.print("\n[bold]Run manually:[/bold]")
         console.print(
             f"  claude --model {model} -p "
             f"--mcp-config {mcp_path} "
@@ -333,9 +333,13 @@ def dashboard() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    security: bool = typer.Option(False, "--security", help="Include privacy and security hardening checks."),
+) -> None:
     """Check your setup and diagnose missing requirements."""
     import shutil
+    import sys
+    from pathlib import Path
     from applypilot.config import (
         load_env, PROFILE_PATH, RESUME_PATH, RESUME_PDF_PATH,
         SEARCH_CONFIG_PATH, ENV_PATH, get_chrome_path,
@@ -449,6 +453,73 @@ def doctor() -> None:
         console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
     elif tier == 2:
         console.print("[dim]  → Tier 3 unlocks: auto-apply (needs Claude Code CLI + Chrome + Node.js)[/dim]")
+
+    if security:
+        from applypilot import config as cfg
+        from applypilot.apply.launcher import _make_mcp_config
+
+        sec_rows: list[tuple[str, str, str]] = []
+        sec_rows.append(("Privacy mode", ok_mark if cfg.is_strict_privacy() else warn_mark, cfg.privacy_mode()))
+        sec_rows.append((
+            "Cloud LLM opt-in",
+            ok_mark if cfg.cloud_llm_allowed() else warn_mark,
+            "enabled" if cfg.cloud_llm_allowed() else "disabled; Gemini/OpenAI/Claude fail closed in strict mode",
+        ))
+        sec_rows.append((
+            "Gmail MCP",
+            warn_mark if cfg.gmail_mcp_enabled() else ok_mark,
+            (
+                "enabled despite vulnerable transitive deps"
+                if cfg.gmail_mcp_enabled()
+                else (
+                    "requested but blocked; set APPLYPILOT_ALLOW_VULNERABLE_GMAIL_MCP=1 to override"
+                    if cfg.gmail_mcp_requested()
+                    else "disabled"
+                )
+            ),
+        ))
+        sec_rows.append((
+            "CapSolver",
+            warn_mark if cfg.capsolver_enabled() else ok_mark,
+            "enabled" if cfg.capsolver_enabled() else "disabled",
+        ))
+        sec_rows.append((
+            "Chrome profile cloning",
+            warn_mark if cfg.clone_chrome_profile_enabled() else ok_mark,
+            "enabled" if cfg.clone_chrome_profile_enabled() else "disabled; clean worker profiles",
+        ))
+
+        for label, path in (
+            ("profile.json mode", PROFILE_PATH),
+            ("resume.txt mode", RESUME_PATH),
+            (".env mode", ENV_PATH),
+            ("searches.yaml mode", SEARCH_CONFIG_PATH),
+        ):
+            mode = cfg.secure_file_mode(path)
+            status = ok_mark if mode in ("0o600", "missing") else warn_mark
+            sec_rows.append((label, status, mode))
+
+        mcp = _make_mcp_config(9222)
+        pw_args = mcp["mcpServers"]["playwright"]["args"]
+        pinned = any("@latest" not in arg and "@playwright/mcp@" in arg for arg in pw_args)
+        sec_rows.append(("Playwright MCP pin", ok_mark if pinned else warn_mark, " ".join(pw_args)))
+        sec_rows.append((
+            "Gmail MCP config",
+            ok_mark if "gmail" not in mcp["mcpServers"] else warn_mark,
+            "absent by default" if "gmail" not in mcp["mcpServers"] else "present",
+        ))
+
+        scanner_bins = ["bandit", "semgrep", "pip-audit", "detect-secrets", "ruff", "npm"]
+        for name in scanner_bins:
+            venv_candidate = Path(sys.executable).with_name(name)
+            found = shutil.which(name) or (str(venv_candidate) if venv_candidate.exists() else None)
+            sec_rows.append((f"scanner: {name}", ok_mark if found else warn_mark, found or "not installed"))
+
+        console.print("\n[bold]Security Checks[/bold]\n")
+        sec_col_w = max(len(r[0]) for r in sec_rows) + 2
+        for check, status, note in sec_rows:
+            pad = " " * (sec_col_w - len(check))
+            console.print(f"  {check}{pad}{status}  [dim]{note}[/dim]")
 
     console.print()
 

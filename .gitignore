@@ -1,27 +1,70 @@
-# User data (NEVER commit)
+# User data and secrets (NEVER commit)
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
 profile.json
+profile.*.json
+!profile.example.json
 resume.txt
 resume.pdf
-*.env
-.env.*
-!.env.example
+resume.doc
+resume.docx
+resume-*.txt
+resume-*.pdf
+resume-*.doc
+resume-*.docx
+cover-letter*.txt
+cover-letter*.pdf
+cover_letter*.txt
+cover_letter*.pdf
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+*.mobileprovision
+.secrets.baseline
 
 # Runtime artifacts
+.applypilot/
+applypilot-data/
+applypilot.db*
 *.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.wal
+*.shm
+dashboard.html
 tailored_resumes/
 cover_letters/
 chrome-workers/
 apply-workers/
 apply_logs/
 logs/
+prompt_*.txt
+claude_*.txt
+worker-*.log
 
 # MCP configs (per-machine)
 .mcp*.json
+mcp*.json
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+.cache/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
 *.egg-info/
 dist/
 build/
