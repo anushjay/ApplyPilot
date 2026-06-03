@@ -81,9 +81,7 @@ def _load_location_config(search_cfg: dict) -> tuple[list[str], list[str]]:
 
     Falls back to sensible defaults if not defined in the YAML.
     """
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+    return config.location_filters(search_cfg)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -461,7 +459,7 @@ def run_discovery(cfg: dict | None = None) -> dict:
         return {"new": 0, "existing": 0, "errors": 0, "db_total": 0, "queries": 0}
 
     proxy = cfg.get("proxy")
-    sites = cfg.get("sites")
+    sites = config.job_board_sites(cfg)
     results_per_site = cfg.get("defaults", {}).get("results_per_site", 100)
     hours_old = cfg.get("defaults", {}).get("hours_old", 72)
     tiers = cfg.get("tiers")

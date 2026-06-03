@@ -122,6 +122,34 @@ def load_sites_config() -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
+def job_board_sites(search_cfg: dict) -> list[str] | None:
+    """Return JobSpy board names from search config.
+
+    Historically the example config used ``boards`` while discovery read
+    ``sites``. Accept both so existing user configs keep working.
+    """
+    sites = search_cfg.get("sites")
+    if sites is not None:
+        return sites
+    return search_cfg.get("boards")
+
+
+def location_filters(search_cfg: dict) -> tuple[list[str], list[str]]:
+    """Return accepted and rejected location patterns from search config.
+
+    The current example config nests these under ``location`` while older
+    discovery code used flat keys. Accept both formats.
+    """
+    location_cfg = search_cfg.get("location", {}) or {}
+    accept = search_cfg.get("location_accept")
+    reject = search_cfg.get("location_reject_non_remote")
+    if accept is None:
+        accept = location_cfg.get("accept_patterns", [])
+    if reject is None:
+        reject = location_cfg.get("reject_patterns", [])
+    return accept, reject
+
+
 def is_manual_ats(url: str | None) -> bool:
     """Check if a URL routes through an ATS that requires manual application."""
     if not url:

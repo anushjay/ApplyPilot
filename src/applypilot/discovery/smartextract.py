@@ -52,9 +52,7 @@ def _load_location_filter(search_cfg: dict | None = None):
     """Load location accept/reject lists from search config."""
     if search_cfg is None:
         search_cfg = config.load_search_config()
-    accept = search_cfg.get("location_accept", [])
-    reject = search_cfg.get("location_reject_non_remote", [])
-    return accept, reject
+    return config.location_filters(search_cfg)
 
 
 def _location_ok(location: str | None, accept: list[str], reject: list[str]) -> bool:
@@ -978,7 +976,7 @@ def build_scrape_targets(
     queries_cfg = search_cfg.get("queries", [])
     queries = [q["query"] for q in queries_cfg]
     locs = search_cfg.get("locations", [])
-    default_location = locs[0]["location"] if locs else ""
+    location_values = [loc.get("location", "") for loc in locs] or [""]
 
     targets: list[dict] = []
 
@@ -989,22 +987,25 @@ def build_scrape_targets(
 
         if site_type == "search" and queries:
             for query in queries:
-                expanded_url = site_url
-                expanded_url = expanded_url.replace("{query_encoded}", quote_plus(query))
-                expanded_url = expanded_url.replace("{query}", quote_plus(query))
-                expanded_url = expanded_url.replace("{location_encoded}", quote_plus(default_location))
-                targets.append({
-                    "name": site_name,
-                    "url": expanded_url,
-                    "query": query,
-                })
+                for location in location_values:
+                    expanded_url = site_url
+                    expanded_url = expanded_url.replace("{query_encoded}", quote_plus(query))
+                    expanded_url = expanded_url.replace("{query}", quote_plus(query))
+                    expanded_url = expanded_url.replace("{location_encoded}", quote_plus(location))
+                    targets.append({
+                        "name": site_name,
+                        "url": expanded_url,
+                        "query": query,
+                        "location": location,
+                    })
         else:
             expanded_url = site_url
-            expanded_url = expanded_url.replace("{location_encoded}", quote_plus(default_location))
+            expanded_url = expanded_url.replace("{location_encoded}", quote_plus(location_values[0]))
             targets.append({
                 "name": site_name,
                 "url": expanded_url,
                 "query": None,
+                "location": location_values[0],
             })
 
     return targets
