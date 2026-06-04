@@ -1,0 +1,124 @@
+# ApplyPilot scoring configuration.
+#
+# Keep scoring prompt text, default user preferences, weights, and score
+# ceilings here so scorer.py only owns execution/parsing logic.
+
+prompt: |
+  You are a job fit evidence evaluator. Given a candidate resume, job description, and scoring preferences,
+  extract structured evidence for fit. Do not produce a final narrative score directly. The application will compute the
+  final score from your structured evidence.
+
+  EVALUATION RULES:
+  - Prefer explicit resume evidence over keyword overlap.
+  - Identify hard requirements from the job posting before judging fit.
+  - Treat missing hard requirements as real gaps even if the candidate has adjacent partnership or technology experience.
+  - Scoring preferences are target-role preferences and watchlists, not job requirements. Do not copy preferences into
+    hard_requirement_gaps unless the job explicitly requires that qualification and the resume lacks evidence for it.
+  - Treat dealbreakers from scoring preferences as dealbreaker_gaps only when the job posting explicitly states evidence
+    that triggers the dealbreaker. Do not infer compensation, timezone, travel, or location dealbreakers when omitted.
+  - Do not infer industry, quota, sales-cycle, professional-services, timezone, travel, or hardware expertise unless the
+    resume explicitly supports it.
+  - The candidate is based in the San Francisco Bay Area. Treat roles anchored to EMEA, Europe, or incompatible regional
+    working hours as serious location/timezone gaps unless the posting explicitly supports US-compatible remote work.
+  - Business development roles should score low unless the title and description are clearly product or technology
+    partnerships, platform partnerships, AI partnerships, partner ecosystem, or strategic alliances.
+  - If the job's primary function is listed under deprioritize or dealbreakers, score that functional mismatch heavily
+    even when the title also contains target-role words such as partner, partnerships, ecosystem, alliances, AI, or platform.
+  - The candidate does not have deep hardware, semiconductor, manufacturing, supply-chain, or embedded systems experience.
+    Do not penalize solely because the employer is a hardware company; evaluate whether the role itself depends on those
+    domains.
+
+  DIMENSION SCORE GUIDE:
+  - 9-10: direct evidence in the resume with no important gaps
+  - 7-8: strong evidence with only minor or adjacent gaps
+  - 5-6: transferable evidence but important hard requirements or domain gaps are missing
+  - 3-4: weak role-family fit or multiple hard gaps
+  - 1-2: wrong function or little relevant evidence
+
+  Return valid JSON only. Do not wrap in markdown.
+
+  Schema:
+  {
+    "role_family": "one concise label",
+    "dimension_scores": {
+      "target_role_alignment": 1-10,
+      "partnerships_alignment": 1-10,
+      "product_platform_alignment": 1-10,
+      "industry_domain_alignment": 1-10,
+      "sales_motion_alignment": 1-10,
+      "technical_domain_alignment": 1-10,
+      "seniority_alignment": 1-10,
+      "location_timezone_alignment": 1-10
+    },
+    "positive_evidence": ["resume-backed evidence"],
+    "hard_requirement_gaps": [
+      {
+        "requirement": "important required qualification missing or weak in resume",
+        "job_evidence_quote": "short exact quote from the job posting proving this is required",
+        "resume_gap": "why the resume does not satisfy it"
+      }
+    ],
+    "dealbreaker_gaps": [
+      {
+        "requirement": "gap that should keep the job below 5",
+        "job_evidence_quote": "short exact quote from the job posting proving this is required",
+        "resume_gap": "why the resume does not satisfy it"
+      }
+    ],
+    "matched_keywords": ["ATS keywords from the job that are genuinely supported or adjacent"],
+    "recommended_score": 1-10,
+    "confidence": "low|medium|high"
+  }
+
+default_preferences:
+  target_roles:
+    - product partnerships
+    - technology partnerships
+    - platform partnerships
+    - AI partnerships
+    - partner ecosystem
+    - strategic alliances
+  deprioritize:
+    - pure business development
+    - pure software engineering
+    - pure project or program management
+    - professional services sales
+    - quota-carrying account sales
+    - customer success
+    - hardware
+    - semiconductor
+    - manufacturing
+    - supply chain
+    - embedded systems
+  watch_for_hard_gaps:
+    - financial services domain required
+    - professional services sales required
+    - full sales lifecycle required
+    - owning a book of business required
+    - marketing or sales asset creation required
+    - EST/CST timezone required
+    - EMEA or Europe timezone required
+    - 50 percent travel required
+  dealbreakers: []
+
+dimension_weights:
+  target_role_alignment: 0.20
+  partnerships_alignment: 0.20
+  product_platform_alignment: 0.15
+  industry_domain_alignment: 0.10
+  sales_motion_alignment: 0.10
+  technical_domain_alignment: 0.10
+  seniority_alignment: 0.10
+  location_timezone_alignment: 0.05
+
+score_ceiling:
+  dealbreaker: 4
+  multiple_hard_gaps:
+    count: 3
+    ceiling: 5
+  any_hard_gap: 7
+  location_timezone:
+    severe_threshold: 2
+    severe_ceiling: 6
+    mismatch_threshold: 3
+    mismatch_ceiling: 7

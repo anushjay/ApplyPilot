@@ -106,13 +106,22 @@ def load_search_config() -> dict:
     import yaml
     if not SEARCH_CONFIG_PATH.exists():
         return {}
-    return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
+    return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8")) or {}
 
 
 def load_sites_config() -> dict:
     """Load sites.yaml configuration (sites list, manual_ats, blocked, etc.)."""
     import yaml
     path = CONFIG_DIR / "sites.yaml"
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def load_scoring_config() -> dict:
+    """Load packaged scoring defaults, prompts, weights, and score policy."""
+    import yaml
+    path = CONFIG_DIR / "scoring.yaml"
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
