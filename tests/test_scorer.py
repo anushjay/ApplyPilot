@@ -220,6 +220,164 @@ def test_configured_score_cap_matches_title(monkeypatch):
     assert cap == (5, "primary partner marketing function")
 
 
+def test_configured_score_cap_matches_product_design_title(monkeypatch):
+    from applypilot.scoring import scorer
+
+    monkeypatch.setattr(
+        scorer.config,
+        "load_search_config",
+        lambda: {
+            "scoring_preferences": {
+                "score_caps": [
+                    {
+                        "field": "title",
+                        "contains": ["product designer"],
+                        "ceiling": 5,
+                        "reason": "primary product-design function",
+                    }
+                ]
+            }
+        },
+    )
+
+    cap = scorer._configured_score_cap({"title": "Product Designer, Marketplace"})
+
+    assert cap == (5, "primary product-design function")
+
+
+def test_configured_salary_cap_when_advertised_range_below_floor(monkeypatch):
+    from applypilot.scoring import scorer
+
+    monkeypatch.setattr(
+        scorer.config,
+        "load_search_config",
+        lambda: {
+            "scoring_preferences": {
+                "salary_caps": [
+                    {
+                        "floor": 200000,
+                        "ceiling": 4,
+                        "reason": "advertised base pay below $200,000 floor",
+                    }
+                ]
+            }
+        },
+    )
+
+    cap = scorer._configured_score_cap({"salary": "USD123,372-USD161,925/yearly"})
+
+    assert cap == (4, "advertised base pay below $200,000 floor ($123,372, $161,925)")
+
+
+def test_configured_salary_cap_does_not_match_when_range_reaches_floor(monkeypatch):
+    from applypilot.scoring import scorer
+
+    monkeypatch.setattr(
+        scorer.config,
+        "load_search_config",
+        lambda: {
+            "scoring_preferences": {
+                "salary_caps": [
+                    {
+                        "floor": 200000,
+                        "ceiling": 4,
+                        "reason": "advertised base pay below $200,000 floor",
+                    }
+                ]
+            }
+        },
+    )
+
+    cap = scorer._configured_score_cap({"salary": "USD203,000-USD274,500/yearly"})
+
+    assert cap is None
+
+
+def test_configured_salary_cap_ignores_unrelated_description_dollar_amount(monkeypatch):
+    from applypilot.scoring import scorer
+
+    monkeypatch.setattr(
+        scorer.config,
+        "load_search_config",
+        lambda: {
+            "scoring_preferences": {
+                "salary_caps": [
+                    {
+                        "floor": 200000,
+                        "ceiling": 4,
+                        "reason": "advertised base pay below $200,000 floor",
+                    }
+                ]
+            }
+        },
+    )
+
+    cap = scorer._configured_score_cap({"full_description": "Managed a $5,000 pilot budget for experiments."})
+
+    assert cap is None
+
+
+def test_configured_salary_cap_reads_compensation_context_in_description(monkeypatch):
+    from applypilot.scoring import scorer
+
+    monkeypatch.setattr(
+        scorer.config,
+        "load_search_config",
+        lambda: {
+            "scoring_preferences": {
+                "salary_caps": [
+                    {
+                        "floor": 200000,
+                        "ceiling": 4,
+                        "reason": "advertised base pay below $200,000 floor",
+                    }
+                ]
+            }
+        },
+    )
+
+    cap = scorer._configured_score_cap({"full_description": "The base salary range is $130,000 - $140,000 per year."})
+
+    assert cap == (4, "advertised base pay below $200,000 floor ($130,000, $140,000)")
+
+
+def test_apply_configured_cap_lowers_score_and_explains_reason(monkeypatch):
+    from applypilot.scoring import scorer
+
+    monkeypatch.setattr(
+        scorer.config,
+        "load_search_config",
+        lambda: {
+            "scoring_preferences": {
+                "score_caps": [
+                    {
+                        "field": "title",
+                        "contains": ["product designer"],
+                        "ceiling": 5,
+                        "reason": "primary product-design function",
+                    }
+                ],
+                "salary_caps": [
+                    {
+                        "floor": 200000,
+                        "ceiling": 4,
+                        "reason": "advertised base pay below $200,000 floor",
+                    }
+                ],
+            }
+        },
+    )
+
+    score, reasoning = scorer._apply_configured_cap(
+        8,
+        "Role family: Product Partnerships.",
+        {"title": "Product Designer, Marketplace", "salary": "USD123,372-USD161,925/yearly"},
+    )
+
+    assert score == 4
+    assert "advertised base pay below $200,000 floor" in reasoning
+
+
 def test_merge_preferences_maps_legacy_hard_gaps_key():
     from applypilot.scoring.scorer import _default_scoring_preferences, _merge_preferences
 

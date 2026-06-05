@@ -115,6 +115,91 @@ def _text_for_cap_field(job: dict[str, Any], field: str) -> str:
     )
 
 
+def _salary_amounts(text: str, require_compensation_context: bool = False) -> list[int]:
+    """Extract plausible annual USD salary amounts from job text.
+
+    Supports forms like ``USD123,000``, ``$123,000``, ``$123k``, and
+    hourly rates such as ``$25 per hour`` converted to annualized base pay.
+    """
+    amounts: list[int] = []
+    pattern = re.compile(
+        r"(?i)(?:(usd\s*|\$)\s*([0-9][0-9,]*(?:\.\d+)?)\s*(k)?|([0-9]+(?:\.\d+)?)\s*k\b)"
+    )
+    for match in pattern.finditer(text or ""):
+        raw = match.group(2) or match.group(4)
+        if not raw:
+            continue
+        amount = float(raw.replace(",", ""))
+        has_k_suffix = bool(match.group(3) or match.group(4))
+        context = text[max(0, match.start() - 40):match.end() + 80].lower()
+        if require_compensation_context and not any(
+            term in context
+            for term in (
+                "salary",
+                "base pay",
+                "base salary",
+                "compensation",
+                "pay range",
+                "annual",
+                "yearly",
+                "per year",
+                "per hour",
+                "hourly",
+                "/hr",
+            )
+        ):
+            continue
+        if has_k_suffix:
+            amount *= 1000
+        elif amount < 1000 and any(term in context for term in ("hour", "hourly", "/hr", "per hr")):
+            amount *= 2080
+        elif amount < 1000:
+            continue
+        amounts.append(int(round(amount)))
+    return amounts
+
+
+def _configured_salary_cap(job: dict[str, Any]) -> tuple[int, str] | None:
+    """Return a configured salary cap when advertised base pay is below floor."""
+    prefs = _scoring_preferences()
+    rules = prefs.get("salary_caps", [])
+    if not isinstance(rules, list):
+        return None
+
+    salary_field = str(job.get("salary") or "").strip()
+    if salary_field:
+        amounts = _salary_amounts(salary_field)
+    else:
+        description = str(job.get("full_description") or job.get("description") or "")
+        amounts = _salary_amounts(description, require_compensation_context=True)
+    if not amounts:
+        return None
+
+    matches: list[tuple[int, str]] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        floor = _config_int(rule.get("floor") or rule.get("min_base"), 0)
+        if floor <= 0:
+            continue
+        mode = str(rule.get("mode") or "max_below_floor").strip().lower()
+        if mode == "any_below_floor":
+            below_floor = any(amount < floor for amount in amounts)
+        else:
+            below_floor = max(amounts) < floor
+        if not below_floor:
+            continue
+
+        ceiling = max(1, min(10, _config_int(rule.get("ceiling"), 4)))
+        amount_summary = ", ".join(f"${amount:,}" for amount in sorted(set(amounts)))
+        reason = str(rule.get("reason") or f"advertised base pay below ${floor:,}").strip()
+        matches.append((ceiling, f"{reason} ({amount_summary})"))
+
+    if not matches:
+        return None
+    return min(matches, key=lambda item: item[0])
+
+
 def _configured_score_cap(job: dict[str, Any]) -> tuple[int, str] | None:
     """Return the lowest matching user-configured score cap for a job.
 
@@ -156,8 +241,24 @@ def _configured_score_cap(job: dict[str, Any]) -> tuple[int, str] | None:
         matches.append((ceiling, reason))
 
     if not matches:
-        return None
+        salary_cap = _configured_salary_cap(job)
+        return salary_cap
+    salary_cap = _configured_salary_cap(job)
+    if salary_cap:
+        matches.append(salary_cap)
     return min(matches, key=lambda item: item[0])
+
+
+def _apply_configured_cap(score: int, reasoning: str, job: dict[str, Any]) -> tuple[int, str]:
+    """Apply the lowest matching configured cap to a computed score."""
+    configured_cap = _configured_score_cap(job)
+    if not configured_cap:
+        return score, reasoning
+    ceiling, cap_reason = configured_cap
+    if score <= ceiling:
+        return score, reasoning
+    score = ceiling
+    return score, f"{reasoning} Final score capped at {score} due to {cap_reason}."
 
 
 def _merge_preferences(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -364,12 +465,7 @@ def score_job(resume_text: str, job: dict) -> dict:
         try:
             evidence = _extract_json(response)
             score, keywords, reasoning = _compute_score(evidence)
-            configured_cap = _configured_score_cap(job)
-            if configured_cap:
-                ceiling, cap_reason = configured_cap
-                if score > ceiling:
-                    score = ceiling
-                    reasoning += f" Final score capped at {score} due to {cap_reason}."
+            score, reasoning = _apply_configured_cap(score, reasoning, job)
             return {"score": score, "keywords": keywords, "reasoning": reasoning}
         except Exception as parse_error:
             log.warning("Structured score parse failed for '%s': %s", job.get("title", "?"), parse_error)
