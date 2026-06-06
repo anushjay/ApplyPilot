@@ -105,11 +105,12 @@ BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, De
 - Do NOT change real numbers ({metrics_str})
 - Preserved companies: {companies_str} -- names stay as-is
 - Preserved school: {school}
+- Education must be one array item per university/program, not one combined sentence.
 - Must fit 1 page.
 
 ## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
 
-{{"title":"Candidate Current Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":"{school} | {education_level}"}}"""
+{{"title":"Candidate Current Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":["{school} | {education_level}"]}}"""
 
 
 def _build_judge_prompt(profile: dict) -> str:
@@ -294,9 +295,21 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
 
     # Education
     lines.append("EDUCATION")
-    lines.append(sanitize_text(str(data.get("education", ""))))
+    lines.extend(format_education_lines(data.get("education", "")))
 
     return "\n".join(lines)
+
+
+def format_education_lines(education: object) -> list[str]:
+    """Normalize education into one line per school/program."""
+    if isinstance(education, list):
+        raw_lines = [str(item) for item in education]
+    else:
+        raw = str(education or "")
+        raw_lines = raw.replace(";", "\n").splitlines()
+
+    lines = [sanitize_text(line.strip()) for line in raw_lines if line.strip()]
+    return lines or [""]
 
 
 # ── LLM Judge ────────────────────────────────────────────────────────────

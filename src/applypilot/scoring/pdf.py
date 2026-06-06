@@ -5,6 +5,7 @@ and exports to PDF using headless Chromium via Playwright.
 """
 
 import logging
+from html import escape
 from pathlib import Path
 
 from applypilot.config import TAILORED_DIR
@@ -193,8 +194,14 @@ def build_html(resume: dict) -> str:
     # Education
     edu_html = ""
     if "EDUCATION" in sections:
-        edu_text = sections["EDUCATION"].strip()
-        edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
+        edu_lines = [
+            line.strip()
+            for line in sections["EDUCATION"].strip().splitlines()
+            if line.strip()
+        ]
+        if edu_lines:
+            rows = "".join(f'<div class="edu-line">{escape(line)}</div>' for line in edu_lines)
+            edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{rows}</div></div>'
 
     # Summary
     summary_html = ""
@@ -225,8 +232,8 @@ def build_html(resume: dict) -> str:
 }}
 body {{
     font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
-    font-size: 10pt;
-    line-height: 1.35;
+    font-size: 9pt;
+    line-height: 1.3;
     color: #1a1a1a;
 }}
 .header {{
@@ -236,22 +243,22 @@ body {{
     border-bottom: 1.5px solid #2a7ab5;
 }}
 .name {{
-    font-size: 18pt;
+    font-size: 16.5pt;
     font-weight: 700;
     color: #1a3a5c;
     letter-spacing: 0.5px;
 }}
 .title {{
-    font-size: 10.5pt;
+    font-size: 9.5pt;
     color: #3a6b8c;
     margin: 1px 0;
 }}
 .location {{
-    font-size: 9pt;
+    font-size: 8.5pt;
     color: #555;
 }}
 .contact {{
-    font-size: 9pt;
+    font-size: 8.5pt;
     color: #444;
     margin-top: 1px;
 }}
@@ -263,7 +270,7 @@ body {{
     margin-top: 5px;
 }}
 .section-title {{
-    font-size: 10pt;
+    font-size: 9pt;
     font-weight: 700;
     color: #1a3a5c;
     text-transform: uppercase;
@@ -273,12 +280,12 @@ body {{
     margin-bottom: 3px;
 }}
 .summary {{
-    font-size: 9.5pt;
+    font-size: 8.8pt;
     color: #333;
     line-height: 1.4;
 }}
 .skill-row {{
-    font-size: 9.5pt;
+    font-size: 8.8pt;
     margin: 0;
     line-height: 1.35;
 }}
@@ -292,11 +299,11 @@ body {{
 }}
 .entry-title {{
     font-weight: 600;
-    font-size: 10pt;
+    font-size: 9pt;
     color: #1a3a5c;
 }}
 .entry-subtitle {{
-    font-size: 9pt;
+    font-size: 8.5pt;
     color: #4a7a9b;
     font-style: italic;
     margin-bottom: 1px;
@@ -306,12 +313,16 @@ ul {{
     padding: 0;
 }}
 li {{
-    font-size: 9.5pt;
+    font-size: 8.8pt;
     margin-bottom: 1px;
     line-height: 1.35;
 }}
 .edu {{
-    font-size: 10pt;
+    font-size: 8.8pt;
+    line-height: 1.3;
+}}
+.edu-line {{
+    margin-bottom: 1px;
 }}
 </style>
 </head>

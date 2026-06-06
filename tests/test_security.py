@@ -155,6 +155,56 @@ def test_resume_assembler_uses_profile_title_not_llm_title():
     assert "Senior Partner Manager" not in rendered[:3]
 
 
+def test_resume_assembler_places_each_education_item_on_own_line():
+    from applypilot.scoring.tailor import assemble_resume_text
+
+    profile = {
+        "personal": {"full_name": "Test Candidate", "email": "test@example.com"},
+        "experience": {"current_job_title": "Director, Technology Partnerships"},
+    }
+    data = {
+        "title": "Senior Partner Manager",
+        "summary": "Partnerships leader.",
+        "skills": {"Tools": "AWS"},
+        "experience": [],
+        "projects": [],
+        "education": [
+            "New Jersey Institute of Technology | Master's Degree",
+            "Anna University | Bachelor's Degree",
+        ],
+    }
+
+    rendered = assemble_resume_text(data, profile).splitlines()
+    education_index = rendered.index("EDUCATION")
+
+    assert rendered[education_index + 1] == "New Jersey Institute of Technology | Master's Degree"
+    assert rendered[education_index + 2] == "Anna University | Bachelor's Degree"
+
+
+def test_resume_pdf_renders_education_lines_separately():
+    from applypilot.scoring.pdf import build_html, parse_resume
+
+    resume = parse_resume(
+        """Test Candidate
+Director, Technology Partnerships
+test@example.com
+
+SUMMARY
+Partnerships leader.
+
+EDUCATION
+New Jersey Institute of Technology | Master's Degree
+Anna University | Bachelor's Degree
+"""
+    )
+
+    html = build_html(resume)
+
+    assert html.count('class="edu-line"') == 2
+    assert "New Jersey Institute of Technology | Master&#x27;s Degree" in html
+    assert "Anna University | Bachelor&#x27;s Degree" in html
+
+
 def test_mcp_config_is_pinned_and_gmail_absent_by_default(monkeypatch):
     from applypilot.apply.launcher import _make_mcp_config
 
