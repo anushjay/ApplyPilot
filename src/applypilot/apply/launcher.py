@@ -104,7 +104,7 @@ GMAIL_DISALLOWED_TOOLS = (
 # ---------------------------------------------------------------------------
 
 def acquire_job(target_url: str | None = None, min_score: int = 7,
-                worker_id: int = 0) -> dict | None:
+                worker_id: int = 0, resume_mode: str = "tailored") -> dict | None:
     """Atomically acquire the next job to apply to.
 
     Args:
@@ -118,16 +118,19 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        resume_ready_clause = (
+            "1=1" if resume_mode == "default" else "tailored_resume_path IS NOT NULL"
+        )
 
         if target_url:
             like = f"%{target_url.split('?')[0].rstrip('/')}%"
-            row = conn.execute("""
+            row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
                 WHERE (url = ? OR application_url = ? OR application_url LIKE ? OR url LIKE ?)
-                  AND tailored_resume_path IS NOT NULL
-                  AND apply_status != 'in_progress'
+                  AND {resume_ready_clause}
+                  AND (apply_status IS NULL OR apply_status != 'in_progress')
                 LIMIT 1
             """, (target_url, target_url, like, like)).fetchone()
         else:
@@ -147,7 +150,7 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
                 SELECT url, title, site, application_url, tailored_resume_path,
                        fit_score, location, full_description, cover_letter_path
                 FROM jobs
-                WHERE tailored_resume_path IS NOT NULL
+                WHERE {resume_ready_clause}
                   AND (apply_status IS NULL OR apply_status = 'failed')
                   AND (apply_attempts IS NULL OR apply_attempts < ?)
                   AND fit_score >= ?
@@ -227,24 +230,29 @@ def release_lock(url: str) -> None:
 # ---------------------------------------------------------------------------
 
 def gen_prompt(target_url: str, min_score: int = 7,
-               model: str = "sonnet", worker_id: int = 0) -> Path | None:
+               model: str = "sonnet", worker_id: int = 0,
+               resume_mode: str = "tailored") -> Path | None:
     """Generate a prompt file and print the Claude CLI command for manual debugging.
 
     Returns:
         Path to the generated prompt file, or None if no job found.
     """
-    job = acquire_job(target_url=target_url, min_score=min_score, worker_id=worker_id)
+    job = acquire_job(
+        target_url=target_url,
+        min_score=min_score,
+        worker_id=worker_id,
+        resume_mode=resume_mode,
+    )
     if not job:
         return None
 
-    # Read resume text
-    resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
-    resume_text = ""
-    if txt_path and txt_path.exists():
-        resume_text = txt_path.read_text(encoding="utf-8")
+    resume_text = _read_resume_text(job, resume_mode=resume_mode)
 
-    prompt = prompt_mod.build_prompt(job=job, tailored_resume=resume_text)
+    prompt = prompt_mod.build_prompt(
+        job=job,
+        tailored_resume=resume_text,
+        resume_mode=resume_mode,
+    )
 
     # Release the lock so the job stays available
     release_lock(job["url"])
@@ -311,8 +319,22 @@ def reset_failed() -> int:
 # Per-job execution
 # ---------------------------------------------------------------------------
 
+def _read_resume_text(job: dict, resume_mode: str = "tailored") -> str:
+    if resume_mode == "default":
+        if config.RESUME_PATH.exists():
+            return config.RESUME_PATH.read_text(encoding="utf-8")
+        return ""
+
+    resume_path = job.get("tailored_resume_path")
+    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
+    if txt_path and txt_path.exists():
+        return txt_path.read_text(encoding="utf-8")
+    return ""
+
+
 def run_job(job: dict, port: int, worker_id: int = 0,
-            model: str = "sonnet", dry_run: bool = False) -> tuple[str, int]:
+            model: str = "sonnet", dry_run: bool = False,
+            resume_mode: str = "tailored") -> tuple[str, int]:
     """Spawn a Claude Code session for one job application.
 
     Returns:
@@ -320,12 +342,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         'applied', 'expired', 'captcha', 'login_issue',
         'failed:reason', or 'skipped'.
     """
-    # Read tailored resume text
-    resume_path = job.get("tailored_resume_path")
-    txt_path = Path(resume_path).with_suffix(".txt") if resume_path else None
-    resume_text = ""
-    if txt_path and txt_path.exists():
-        resume_text = txt_path.read_text(encoding="utf-8")
+    resume_text = _read_resume_text(job, resume_mode=resume_mode)
 
     # Build the prompt
     config.require_cloud_llm_allowed("Claude Code auto-apply")
@@ -333,6 +350,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         job=job,
         tailored_resume=resume_text,
         dry_run=dry_run,
+        resume_mode=resume_mode,
     )
     profile = config.load_profile()
 
@@ -560,7 +578,8 @@ def _is_permanent_failure(result: str) -> bool:
 def worker_loop(worker_id: int = 0, limit: int = 1,
                 target_url: str | None = None,
                 min_score: int = 7, headless: bool = False,
-                model: str = "sonnet", dry_run: bool = False) -> tuple[int, int]:
+                model: str = "sonnet", dry_run: bool = False,
+                resume_mode: str = "tailored") -> tuple[int, int]:
     """Run jobs sequentially until limit is reached or queue is empty.
 
     Args:
@@ -589,8 +608,12 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         update_state(worker_id, status="idle", job_title="", company="",
                      last_action="waiting for job", actions=0)
 
-        job = acquire_job(target_url=target_url, min_score=min_score,
-                          worker_id=worker_id)
+        job = acquire_job(
+            target_url=target_url,
+            min_score=min_score,
+            worker_id=worker_id,
+            resume_mode=resume_mode,
+        )
         if not job:
             if not continuous:
                 add_event(f"[W{worker_id}] Queue empty")
@@ -614,7 +637,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
 
             result, duration_ms = run_job(job, port=port, worker_id=worker_id,
-                                            model=model, dry_run=dry_run)
+                                          model=model, dry_run=dry_run,
+                                          resume_mode=resume_mode)
 
             if result == "skipped":
                 release_lock(job["url"])
@@ -665,7 +689,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 def main(limit: int = 1, target_url: str | None = None,
          min_score: int = 7, headless: bool = False, model: str = "sonnet",
          dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1) -> None:
+         poll_interval: int = 60, workers: int = 1,
+         resume_mode: str = "tailored") -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -749,6 +774,7 @@ def main(limit: int = 1, target_url: str | None = None,
                     headless=headless,
                     model=model,
                     dry_run=dry_run,
+                    resume_mode=resume_mode,
                 )
             else:
                 # Multi-worker — distribute limit across workers
@@ -772,6 +798,7 @@ def main(limit: int = 1, target_url: str | None = None,
                             headless=headless,
                             model=model,
                             dry_run=dry_run,
+                            resume_mode=resume_mode,
                         ): i
                         for i in range(workers)
                     }

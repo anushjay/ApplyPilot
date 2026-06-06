@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 import typer
@@ -152,6 +153,7 @@ def apply(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     url: Optional[str] = typer.Option(None, "--url", help="Apply to a specific job URL."),
+    resume_mode: Optional[str] = typer.Option(None, "--resume-mode", help="Resume upload source: tailored or default. Env: APPLYPILOT_APPLY_RESUME_MODE."),
     gen: bool = typer.Option(False, "--gen", help="Generate prompt file for manual debugging instead of running."),
     mark_applied: Optional[str] = typer.Option(None, "--mark-applied", help="Manually mark a job URL as applied."),
     mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
@@ -161,7 +163,11 @@ def apply(
     """Launch auto-apply to submit job applications."""
     _bootstrap()
 
-    from applypilot.config import check_tier, PROFILE_PATH as _profile_path
+    from applypilot.config import (
+        check_tier,
+        PROFILE_PATH as _profile_path,
+        RESUME_PDF_PATH as _resume_pdf_path,
+    )
     from applypilot.database import get_connection
 
     # --- Utility modes (no Chrome/Claude needed) ---
@@ -185,6 +191,10 @@ def apply(
         return
 
     # --- Full apply mode ---
+    effective_resume_mode = (resume_mode or os.environ.get("APPLYPILOT_APPLY_RESUME_MODE") or "tailored").strip().lower()
+    if effective_resume_mode not in {"tailored", "default"}:
+        console.print("[red]Invalid --resume-mode.[/red] Use 'tailored' or 'default'.")
+        raise typer.Exit(code=1)
 
     # Check 1: Tier 3 required (Claude Code CLI + Chrome)
     check_tier(3, "auto-apply")
@@ -197,8 +207,15 @@ def apply(
         )
         raise typer.Exit(code=1)
 
-    # Check 3: Tailored resumes exist (skip for --gen with --url)
-    if not (gen and url):
+    if effective_resume_mode == "default" and not _resume_pdf_path.exists():
+        console.print(
+            f"[red]Default resume PDF not found.[/red]\n"
+            f"Expected: [bold]{_resume_pdf_path}[/bold]"
+        )
+        raise typer.Exit(code=1)
+
+    # Check 3: Tailored resumes exist (skip for --gen with --url or default resume mode)
+    if effective_resume_mode == "tailored" and not (gen and url):
         conn = get_connection()
         ready = conn.execute(
             "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL AND applied_at IS NULL"
@@ -216,7 +233,7 @@ def apply(
         if not target:
             console.print("[red]--gen requires --url to specify which job.[/red]")
             raise typer.Exit(code=1)
-        prompt_file = gen_prompt(target, min_score=min_score, model=model)
+        prompt_file = gen_prompt(target, min_score=min_score, model=model, resume_mode=effective_resume_mode)
         if not prompt_file:
             console.print("[red]No matching job found for that URL.[/red]")
             raise typer.Exit(code=1)
@@ -240,6 +257,7 @@ def apply(
     console.print(f"  Model:    {model}")
     console.print(f"  Headless: {headless}")
     console.print(f"  Dry run:  {dry_run}")
+    console.print(f"  Resume:   {effective_resume_mode}")
     if url:
         console.print(f"  Target:   {url}")
     console.print()
@@ -253,6 +271,7 @@ def apply(
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
+        resume_mode=effective_resume_mode,
     )
 
 

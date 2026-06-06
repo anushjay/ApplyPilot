@@ -425,7 +425,8 @@ If CapSolver genuinely failed (errorId > 0):
 
 def build_prompt(job: dict, tailored_resume: str,
                  cover_letter: str | None = None,
-                 dry_run: bool = False) -> str:
+                 dry_run: bool = False,
+                 resume_mode: str = "tailored") -> str:
     """Build the full instruction prompt for the apply agent.
 
     Loads the user profile and search config internally. All personal data
@@ -437,6 +438,8 @@ def build_prompt(job: dict, tailored_resume: str,
         tailored_resume: Plain-text content of the tailored resume.
         cover_letter: Optional plain-text cover letter content.
         dry_run: If True, tell the agent not to click Submit.
+        resume_mode: "tailored" uploads the job-specific resume. "default"
+            uploads ~/.applypilot/resume.pdf.
 
     Returns:
         Complete prompt string for the AI agent.
@@ -446,11 +449,19 @@ def build_prompt(job: dict, tailored_resume: str,
     personal = profile["personal"]
 
     # --- Resolve resume PDF path ---
-    resume_path = job.get("tailored_resume_path")
-    if not resume_path:
-        raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
+    if resume_mode == "default":
+        src_pdf = config.RESUME_PDF_PATH.resolve()
+        if not src_pdf.exists():
+            raise ValueError(
+                f"Default resume PDF not found: {src_pdf}. "
+                "Add ~/.applypilot/resume.pdf or use --resume-mode tailored."
+            )
+    else:
+        resume_path = job.get("tailored_resume_path")
+        if not resume_path:
+            raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
+        src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
 
-    src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
     if not src_pdf.exists():
         raise ValueError(f"Resume PDF not found: {src_pdf}")
 

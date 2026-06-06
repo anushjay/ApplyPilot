@@ -284,6 +284,79 @@ def test_prompt_does_not_include_password_or_api_keys(tmp_path, monkeypatch):
     assert "CapSolver is disabled" in built
 
 
+def test_prompt_can_upload_default_resume_pdf(tmp_path, monkeypatch):
+    from applypilot import config
+    from applypilot.apply import prompt
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(parents=True)
+    default_pdf = app_dir / "resume.pdf"
+    default_pdf.write_bytes(b"%PDF-1.4 default\n")
+    profile_path = app_dir / "profile.json"
+    search_path = app_dir / "searches.yaml"
+    profile_path.write_text(json.dumps(_profile()), encoding="utf-8")
+    search_path.write_text("location: {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "APP_DIR", app_dir)
+    monkeypatch.setattr(config, "PROFILE_PATH", profile_path)
+    monkeypatch.setattr(config, "SEARCH_CONFIG_PATH", search_path)
+    monkeypatch.setattr(config, "RESUME_PDF_PATH", default_pdf)
+    monkeypatch.setattr(config, "APPLY_WORKER_DIR", app_dir / "apply-workers")
+
+    built = prompt.build_prompt(
+        {
+            "url": "https://example.com/job",
+            "title": "Software Engineer",
+            "site": "Example",
+            "fit_score": 8,
+            "application_url": "https://example.com/apply",
+        },
+        tailored_resume="Default resume text",
+        dry_run=True,
+        resume_mode="default",
+    )
+
+    upload_pdf = app_dir / "apply-workers" / "current" / "Test_Candidate_Resume.pdf"
+    assert upload_pdf.exists()
+    assert upload_pdf.read_bytes() == b"%PDF-1.4 default\n"
+    assert f"Resume PDF (upload this): {upload_pdf}" in built
+    assert "Default resume text" in built
+
+
+def test_apply_default_resume_mode_does_not_require_tailored_resume(tmp_path, monkeypatch):
+    from applypilot import config
+    from applypilot import database
+    from applypilot.apply.launcher import acquire_job
+    from applypilot.database import init_db
+
+    db_path = tmp_path / "applypilot.db"
+    monkeypatch.setattr(config, "DB_PATH", db_path)
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    conn = init_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            url, title, site, fit_score, full_description
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            "https://example.com/job",
+            "Partner Manager",
+            "Example",
+            8,
+            "Partnerships role",
+        ),
+    )
+    conn.commit()
+
+    tailored_job = acquire_job(target_url="https://example.com/job", resume_mode="tailored")
+    default_job = acquire_job(target_url="https://example.com/job", resume_mode="default")
+
+    assert tailored_job is None
+    assert default_job is not None
+    assert default_job["title"] == "Partner Manager"
+
+
 def test_clean_chrome_profile_is_default(tmp_path, monkeypatch):
     from applypilot import config
     from applypilot.apply import chrome
