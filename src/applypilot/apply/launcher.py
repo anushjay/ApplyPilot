@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.live import Live
 
 from applypilot import config
-from applypilot.database import get_connection
+from applypilot.database import get_connection, job_id_filter_sql, mark_job_status
 from applypilot.apply import prompt as prompt_mod
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
@@ -103,8 +103,13 @@ GMAIL_DISALLOWED_TOOLS = (
 # Database operations
 # ---------------------------------------------------------------------------
 
-def acquire_job(target_url: str | None = None, min_score: int = 7,
-                worker_id: int = 0, resume_mode: str = "tailored") -> dict | None:
+def acquire_job(
+    target_url: str | None = None,
+    target_urls: list[str] | None = None,
+    min_score: int = 7,
+    worker_id: int = 0,
+    resume_mode: str = "tailored",
+) -> dict | None:
     """Atomically acquire the next job to apply to.
 
     Args:
@@ -122,7 +127,20 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
         if resume_mode != "tailored":
             resume_ready_clause = "1=1"
 
-        if target_url:
+        if target_urls:
+            id_filter, id_params = job_id_filter_sql(target_urls)
+            row = conn.execute(f"""
+                SELECT url, title, site, application_url, tailored_resume_path,
+                       fit_score, location, full_description, cover_letter_path
+                FROM jobs
+                WHERE {resume_ready_clause}
+                  {id_filter}
+                  AND applied_at IS NULL
+                  AND (apply_status IS NULL OR apply_status = '')
+                ORDER BY fit_score DESC NULLS LAST, url
+                LIMIT 1
+            """, id_params).fetchone()
+        elif target_url:
             like = f"%{target_url.split('?')[0].rstrip('/')}%"
             row = conn.execute(f"""
                 SELECT url, title, site, application_url, tailored_resume_path,
@@ -281,20 +299,7 @@ def mark_job(url: str, status: str, reason: str | None = None) -> None:
         reason: Failure reason (only for status='failed').
     """
     conn = get_connection()
-    now = datetime.now(timezone.utc).isoformat()
-    if status == "applied":
-        conn.execute("""
-            UPDATE jobs SET apply_status = 'applied', applied_at = ?,
-                           apply_error = NULL, agent_id = NULL
-            WHERE url = ?
-        """, (now, url))
-    else:
-        conn.execute("""
-            UPDATE jobs SET apply_status = 'failed', apply_error = ?,
-                           apply_attempts = 99, agent_id = NULL
-            WHERE url = ?
-        """, (reason or "manual", url))
-    conn.commit()
+    mark_job_status(conn, url, status, reason=reason)
 
 
 def reset_failed() -> int:
@@ -583,6 +588,7 @@ def _is_permanent_failure(result: str) -> bool:
 
 def worker_loop(worker_id: int = 0, limit: int = 1,
                 target_url: str | None = None,
+                target_urls: list[str] | None = None,
                 min_score: int = 7, headless: bool = False,
                 model: str = "sonnet", dry_run: bool = False,
                 resume_mode: str = "tailored") -> tuple[int, int]:
@@ -616,6 +622,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 
         job = acquire_job(
             target_url=target_url,
+            target_urls=target_urls,
             min_score=min_score,
             worker_id=worker_id,
             resume_mode=resume_mode,
@@ -693,6 +700,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 # ---------------------------------------------------------------------------
 
 def main(limit: int = 1, target_url: str | None = None,
+         target_urls: list[str] | None = None,
          min_score: int = 7, headless: bool = False, model: str = "sonnet",
          dry_run: bool = False, continuous: bool = False,
          poll_interval: int = 60, workers: int = 1,
@@ -702,6 +710,7 @@ def main(limit: int = 1, target_url: str | None = None,
     Args:
         limit: Max jobs to apply to (0 or with continuous=True means run forever).
         target_url: Apply to a specific URL.
+        target_urls: Apply to a specific URL batch.
         min_score: Minimum fit_score threshold.
         headless: Run Chrome in headless mode.
         model: Claude model name.
@@ -720,6 +729,9 @@ def main(limit: int = 1, target_url: str | None = None,
     if continuous:
         effective_limit = 0
         mode_label = "continuous"
+    elif target_urls:
+        effective_limit = limit if limit else len(target_urls)
+        mode_label = f"{effective_limit} targeted jobs"
     else:
         effective_limit = limit
         mode_label = f"{limit} jobs"
@@ -776,6 +788,7 @@ def main(limit: int = 1, target_url: str | None = None,
                     worker_id=0,
                     limit=effective_limit,
                     target_url=target_url,
+                    target_urls=target_urls,
                     min_score=min_score,
                     headless=headless,
                     model=model,
@@ -800,6 +813,7 @@ def main(limit: int = 1, target_url: str | None = None,
                             worker_id=i,
                             limit=limits[i],
                             target_url=target_url,
+                            target_urls=target_urls,
                             min_score=min_score,
                             headless=headless,
                             model=model,

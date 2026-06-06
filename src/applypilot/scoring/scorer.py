@@ -15,7 +15,7 @@ from typing import Any
 
 from applypilot import config
 from applypilot.config import RESUME_PATH
-from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.database import get_connection, get_jobs_by_stage, job_id_filter_sql
 from applypilot.llm import get_client, get_cloud_client
 
 log = logging.getLogger(__name__)
@@ -607,19 +607,28 @@ def _format_score_reasoning(result: dict) -> str:
     return f"{keywords}\n{reasoning}" if keywords else reasoning
 
 
-def _select_local_jobs(conn, limit: int, rescore: bool) -> list[dict]:
+def _select_local_jobs(conn, limit: int, rescore: bool, job_ids: list[str] | None = None) -> list[dict]:
     """Select jobs for the local scoring pass."""
     if rescore:
         query = "SELECT * FROM jobs WHERE full_description IS NOT NULL ORDER BY discovered_at DESC"
         params: list[Any] = []
+        id_filter, id_params = job_id_filter_sql(job_ids)
+        if id_filter:
+            query = f"SELECT * FROM jobs WHERE full_description IS NOT NULL{id_filter} ORDER BY discovered_at DESC"
+            params.extend(id_params)
         if limit > 0:
             query += " LIMIT ?"
             params.append(limit)
         return _rows_to_dicts(conn.execute(query, params).fetchall())
-    return get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit)
+    return get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit, job_ids=job_ids)
 
 
-def _select_cloud_validation_jobs(conn, min_local_score: int, limit: int) -> list[dict]:
+def _select_cloud_validation_jobs(
+    conn,
+    min_local_score: int,
+    limit: int,
+    job_ids: list[str] | None = None,
+) -> list[dict]:
     """Select high local-score jobs that have not been cloud-validated."""
     query = """
         SELECT * FROM jobs
@@ -629,6 +638,10 @@ def _select_cloud_validation_jobs(conn, min_local_score: int, limit: int) -> lis
         ORDER BY local_fit_score DESC, discovered_at DESC
     """
     params: list[Any] = [min_local_score]
+    id_filter, id_params = job_id_filter_sql(job_ids)
+    if id_filter:
+        query = query.replace("ORDER BY", f"{id_filter}\n        ORDER BY")
+        params.extend(id_params)
     if limit > 0:
         query += " LIMIT ?"
         params.append(limit)
@@ -664,11 +677,11 @@ def _cloud_final_reasoning(job: dict, cloud_result: dict, final_score: int) -> s
     return f"{summary}\nCloud reasoning: {cloud_reasoning}"
 
 
-def run_local_scoring(limit: int = 0, rescore: bool = False) -> dict:
+def run_local_scoring(limit: int = 0, rescore: bool = False, job_ids: list[str] | None = None) -> dict:
     """Run local compact scoring and persist local plus final score metadata."""
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
-    jobs = _select_local_jobs(conn, limit, rescore)
+    jobs = _select_local_jobs(conn, limit, rescore, job_ids=job_ids)
 
     if not jobs:
         log.info("No unscored jobs with descriptions found.")
@@ -730,12 +743,16 @@ def run_local_scoring(limit: int = 0, rescore: bool = False) -> dict:
     }
 
 
-def run_cloud_validation(min_local_score: int | None = None, limit: int = 0) -> dict:
+def run_cloud_validation(
+    min_local_score: int | None = None,
+    limit: int = 0,
+    job_ids: list[str] | None = None,
+) -> dict:
     """Cloud-validate high local scores and keep the stricter final score."""
     min_local_score = min_local_score if min_local_score is not None else _cloud_validation_min_local_score()
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     conn = get_connection()
-    jobs = _select_cloud_validation_jobs(conn, min_local_score, limit)
+    jobs = _select_cloud_validation_jobs(conn, min_local_score, limit, job_ids=job_ids)
 
     if not jobs:
         log.info("No jobs with local score >= %d pending cloud validation.", min_local_score)
@@ -817,13 +834,18 @@ def run_cloud_validation(min_local_score: int | None = None, limit: int = 0) -> 
     }
 
 
-def run_hybrid_scoring(local_limit: int = 0, cloud_limit: int = 0, min_local_score: int | None = None) -> dict:
+def run_hybrid_scoring(
+    local_limit: int = 0,
+    cloud_limit: int = 0,
+    min_local_score: int | None = None,
+    job_ids: list[str] | None = None,
+) -> dict:
     """Run local scoring for pending jobs, then cloud-validate high local scores."""
-    local = run_local_scoring(limit=local_limit)
-    cloud = run_cloud_validation(min_local_score=min_local_score, limit=cloud_limit)
+    local = run_local_scoring(limit=local_limit, job_ids=job_ids)
+    cloud = run_cloud_validation(min_local_score=min_local_score, limit=cloud_limit, job_ids=job_ids)
     return {"local": local, "cloud": cloud}
 
 
-def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
+def run_scoring(limit: int = 0, rescore: bool = False, job_ids: list[str] | None = None) -> dict:
     """Compatibility entrypoint: run local scoring only."""
-    return run_local_scoring(limit=limit, rescore=rescore)
+    return run_local_scoring(limit=limit, rescore=rescore, job_ids=job_ids)

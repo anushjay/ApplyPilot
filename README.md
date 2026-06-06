@@ -162,6 +162,8 @@ applypilot apply --gen --url URL       # generate prompt file for manual debuggi
 ```
 applypilot init                         # First-time setup wizard
 applypilot doctor                       # Verify setup, diagnose missing requirements
+applypilot doctor --security            # Include privacy/security hardening checks
+
 applypilot run [stages...]              # Run pipeline stages (or 'all')
 applypilot run --workers 4              # Parallel discovery/enrichment
 applypilot run --stream                 # Concurrent stages (streaming mode)
@@ -169,14 +171,82 @@ applypilot run --min-score 8            # Override score threshold
 applypilot run --dry-run                # Preview without executing
 applypilot run --validation lenient     # Relax validation (recommended for Gemini free tier)
 applypilot run --validation strict      # Strictest validation (retries on any banned word)
+applypilot run score --job-id URL       # Run a stage for one job URL/application URL
+applypilot run score --ids-file jobs.txt --force  # Clear score output, then rescore a batch
+
+applypilot discover                     # Alias for: applypilot run discover
+applypilot enrich URL --force           # Force re-enrich one job
+applypilot score URL --force            # Force rescore one job
+applypilot tailor URL --force           # Force regenerate tailored resume
+applypilot cover URL --force            # Force regenerate cover letter
+
 applypilot apply                        # Launch auto-apply
 applypilot apply --workers 3            # Parallel browser workers
 applypilot apply --dry-run              # Fill forms without submitting
 applypilot apply --continuous           # Run forever, polling for new jobs
 applypilot apply --headless             # Headless browser mode
 applypilot apply --url URL              # Apply to a specific job
+applypilot apply URL URL                # Apply to a specific batch of job URLs
+applypilot apply --ids-file jobs.txt    # Apply to a newline-delimited batch
+applypilot apply URL --force            # Clear failed/manual/in-progress state, then apply
+applypilot apply --gen --url URL        # Generate prompt file for manual debugging
+applypilot apply --mark-applied URL     # Legacy manual mark helper
+applypilot apply --mark-failed URL      # Legacy manual failure helper
+applypilot apply --reset-failed         # Legacy reset helper
+
+applypilot jobs list                    # List jobs
+applypilot jobs list pending-apply      # List jobs ready to apply
+applypilot jobs list scored --format json  # Machine-readable job list
+applypilot jobs show URL                # Show one job by URL/application URL
+applypilot jobs add URL --title TITLE --site COMPANY  # Import one direct job URL
+applypilot jobs ids pending-apply       # Print canonical job IDs, one URL per line
+applypilot jobs reset score URL --yes   # Wipe score fields without rerunning
+applypilot jobs reset tailor URL --yes  # Wipe tailored resume fields without rerunning
+applypilot jobs remove URL --yes        # Delete a job from the discovery database
+
+applypilot manual packet URL            # Print application URL, resume, and cover letter paths
+applypilot manual packet URL --gen-prompt  # Also generate Claude prompt file
+applypilot manual mark URL --status applied
+applypilot manual mark URL --status failed --reason "manual rejection"
+applypilot manual mark URL --status manual --reason "manual ATS"
+applypilot manual reset --failed
+applypilot manual reset --manual --in-progress
+
 applypilot status                       # Pipeline statistics
 applypilot dashboard                    # Open HTML results dashboard
+```
+
+### Manual Workflow Recipes
+
+```bash
+# Discover from configured searches
+applypilot discover
+
+# Import and prepare one direct job URL
+applypilot jobs add https://company.example/jobs/123 --title "Partner Manager" --site "Company"
+applypilot enrich https://company.example/jobs/123 --force
+applypilot score https://company.example/jobs/123 --force
+applypilot tailor https://company.example/jobs/123 --force
+applypilot cover https://company.example/jobs/123 --force
+
+# Create a batch file from ready jobs, then force re-score/re-tailor that batch
+applypilot jobs ids pending-apply --limit 25 > jobs.txt
+applypilot run score --ids-file jobs.txt --force
+applypilot run tailor cover --ids-file jobs.txt --force
+
+# Prepare materials for hand submission
+applypilot manual packet https://company.example/jobs/123 --gen-prompt
+
+# Apply selected jobs through the browser agent
+applypilot apply --ids-file jobs.txt --force
+
+# Record manual outcomes without touching SQLite directly
+applypilot manual mark https://company.example/jobs/123 --status applied
+applypilot manual mark https://company.example/jobs/456 --status failed --reason "role closed"
+
+# Wipe state or remove jobs without direct SQL
+applypilot jobs reset score https://company.example/jobs/123 --yes
+applypilot jobs remove https://company.example/jobs/456 --yes
 ```
 
 ---

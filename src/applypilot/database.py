@@ -9,6 +9,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from applypilot.config import DB_PATH
 
@@ -349,6 +350,274 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
     return stats
 
 
+def normalize_job_id(job_id: str) -> str:
+    """Normalize a user-provided URL-ish job identifier for matching."""
+    value = (job_id or "").strip()
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return value.rstrip("/")
+    if not parts.scheme or not parts.netloc:
+        return value.rstrip("/")
+    netloc = parts.netloc.lower()
+    path = parts.path.rstrip("/")
+    return urlunsplit((parts.scheme.lower(), netloc, path, "", ""))
+
+
+def _job_id_like(job_id: str) -> str:
+    normalized = normalize_job_id(job_id)
+    return f"%{normalized}%"
+
+
+def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:
+    if not rows:
+        return []
+    columns = rows[0].keys()
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def resolve_job_id(conn: sqlite3.Connection, job_id: str) -> dict | None:
+    """Resolve a CLI job ID to a single job row.
+
+    The current schema uses ``url`` as the primary key. This helper also accepts
+    application URLs and normalized partial URL strings for terminal ergonomics.
+    """
+    normalized = normalize_job_id(job_id)
+    if not normalized:
+        return None
+    like = _job_id_like(normalized)
+    row = conn.execute(
+        """
+        SELECT * FROM jobs
+        WHERE url = ?
+           OR application_url = ?
+           OR url LIKE ?
+           OR application_url LIKE ?
+        ORDER BY
+            CASE
+                WHEN url = ? THEN 0
+                WHEN application_url = ? THEN 1
+                ELSE 2
+            END,
+            discovered_at DESC
+        LIMIT 1
+        """,
+        (job_id, job_id, like, like, job_id, job_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def resolve_job_ids(conn: sqlite3.Connection, job_ids: list[str]) -> list[str]:
+    """Resolve many CLI job IDs to canonical primary-key URLs."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    missing: list[str] = []
+    for job_id in job_ids:
+        row = resolve_job_id(conn, job_id)
+        if not row:
+            missing.append(job_id)
+            continue
+        url = row["url"]
+        if url not in seen:
+            urls.append(url)
+            seen.add(url)
+    if missing:
+        raise ValueError(f"No matching job found for: {', '.join(missing)}")
+    return urls
+
+
+def read_ids_file(path: Path | str) -> list[str]:
+    """Read newline-delimited job IDs, ignoring blanks and comments."""
+    ids_path = Path(path).expanduser()
+    values: list[str] = []
+    for line in ids_path.read_text(encoding="utf-8").splitlines():
+        value = line.strip()
+        if value and not value.startswith("#"):
+            values.append(value)
+    return values
+
+
+def job_id_filter_sql(job_ids: list[str] | None, column: str = "url") -> tuple[str, list[str]]:
+    """Return an SQL ``IN`` clause fragment and parameters for canonical URLs."""
+    if not job_ids:
+        return "", []
+    placeholders = ",".join("?" for _ in job_ids)
+    return f" AND {column} IN ({placeholders})", list(job_ids)
+
+
+def _stage_key(stage: str) -> str:
+    return (stage or "all").strip().lower().replace("-", "_")
+
+
+def add_job(
+    conn: sqlite3.Connection,
+    url: str,
+    title: str | None = None,
+    site: str | None = None,
+    location: str | None = None,
+) -> bool:
+    """Insert one manually discovered job. Returns True when inserted."""
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        conn.execute(
+            """
+            INSERT INTO jobs (url, title, site, location, strategy, discovered_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (url, title or url, site or "manual", location, "manual", now),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def mark_job_status(
+    conn: sqlite3.Connection,
+    url: str,
+    status: str,
+    reason: str | None = None,
+) -> int:
+    """Set a manual apply status for a job and return affected row count."""
+    now = datetime.now(timezone.utc).isoformat()
+    normalized_status = status.strip().lower()
+    if normalized_status == "applied":
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET apply_status = 'applied',
+                applied_at = ?,
+                apply_error = NULL,
+                agent_id = NULL
+            WHERE url = ?
+            """,
+            (now, url),
+        )
+    elif normalized_status == "manual":
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET apply_status = 'manual',
+                apply_error = ?,
+                agent_id = NULL
+            WHERE url = ?
+            """,
+            (reason or "manual", url),
+        )
+    elif normalized_status == "failed":
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET apply_status = 'failed',
+                apply_error = ?,
+                apply_attempts = 99,
+                agent_id = NULL
+            WHERE url = ?
+            """,
+            (reason or "manual", url),
+        )
+    else:
+        raise ValueError("status must be applied, failed, or manual")
+    conn.commit()
+    return cursor.rowcount
+
+
+def reset_jobs_for_stage(
+    conn: sqlite3.Connection,
+    stage: str,
+    urls: list[str],
+    include_applied: bool = False,
+) -> int:
+    """Clear stage output for selected jobs before a forced rerun."""
+    if not urls:
+        return 0
+    placeholders = ",".join("?" for _ in urls)
+    key = _stage_key(stage)
+    params: list = list(urls)
+    if key == "enrich":
+        sql = (
+            "UPDATE jobs SET full_description = NULL, application_url_checked_at = NULL, "
+            "detail_scraped_at = NULL, detail_error = NULL WHERE url IN "
+            f"({placeholders})"
+        )
+    elif key == "score":
+        sql = (
+            "UPDATE jobs SET fit_score = NULL, score_reasoning = NULL, scored_at = NULL, "
+            "local_fit_score = NULL, local_score_reasoning = NULL, local_scored_at = NULL, "
+            "local_score_error = NULL, cloud_fit_score = NULL, cloud_score_reasoning = NULL, "
+            "cloud_validated_at = NULL, cloud_validation_status = NULL, cloud_validation_error = NULL "
+            f"WHERE url IN ({placeholders})"
+        )
+    elif key == "tailor":
+        sql = (
+            "UPDATE jobs SET tailored_resume_path = NULL, tailored_at = NULL, tailor_attempts = 0 "
+            f"WHERE url IN ({placeholders})"
+        )
+    elif key == "cover":
+        sql = (
+            "UPDATE jobs SET cover_letter_path = NULL, cover_letter_at = NULL, cover_attempts = 0 "
+            f"WHERE url IN ({placeholders})"
+        )
+    elif key == "apply":
+        sql = (
+            "UPDATE jobs SET apply_status = NULL, apply_error = NULL, apply_attempts = 0, "
+            "agent_id = NULL, last_attempted_at = NULL "
+            f"WHERE url IN ({placeholders})"
+        )
+        if not include_applied:
+            sql += " AND applied_at IS NULL"
+    else:
+        raise ValueError(f"Cannot force-reset unknown stage: {stage}")
+    cursor = conn.execute(sql, params)
+    conn.commit()
+    return cursor.rowcount
+
+
+def delete_jobs(conn: sqlite3.Connection, urls: list[str]) -> int:
+    """Delete selected jobs from the discovery database."""
+    if not urls:
+        return 0
+    placeholders = ",".join("?" for _ in urls)
+    cursor = conn.execute(f"DELETE FROM jobs WHERE url IN ({placeholders})", urls)
+    conn.commit()
+    return cursor.rowcount
+
+
+def reset_manual_statuses(
+    conn: sqlite3.Connection,
+    failed: bool = False,
+    manual: bool = False,
+    in_progress: bool = False,
+) -> int:
+    """Reset selected non-applied apply statuses for retry."""
+    statuses: list[str] = []
+    if failed:
+        statuses.append("failed")
+    if manual:
+        statuses.append("manual")
+    if in_progress:
+        statuses.append("in_progress")
+    if not statuses:
+        return 0
+    placeholders = ",".join("?" for _ in statuses)
+    cursor = conn.execute(
+        f"""
+        UPDATE jobs
+        SET apply_status = NULL,
+            apply_error = NULL,
+            apply_attempts = 0,
+            agent_id = NULL,
+            last_attempted_at = NULL
+        WHERE apply_status IN ({placeholders})
+        """,
+        statuses,
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
                site: str, strategy: str) -> tuple[int, int]:
     """Store discovered jobs, skipping duplicates by URL.
@@ -388,7 +657,8 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
 def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
                       stage: str = "discovered",
                       min_score: int | None = None,
-                      limit: int = 100) -> list[dict]:
+                      limit: int = 100,
+                      job_ids: list[str] | None = None) -> list[dict]:
     """Fetch jobs filtered by pipeline stage.
 
     Args:
@@ -402,6 +672,10 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
     """
     if conn is None:
         conn = get_connection()
+
+    stage = _stage_key(stage)
+    if stage == "all":
+        stage = "discovered"
 
     conditions = {
         "discovered": "1=1",
@@ -422,6 +696,8 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
             "tailored_resume_path IS NOT NULL AND applied_at IS NULL "
             "AND (application_url IS NOT NULL OR url IS NOT NULL)"
         ),
+        "manual": "apply_status = 'manual'",
+        "failed": "apply_status = 'failed'",
         "applied": "applied_at IS NOT NULL",
     }
 
@@ -436,6 +712,11 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
     if min_score is not None and "fit_score" not in where and stage in ("scored", "tailored", "applied"):
         where += " AND fit_score >= ?"
         params.append(min_score)
+
+    if job_ids:
+        id_filter, id_params = job_id_filter_sql(job_ids)
+        where += id_filter
+        params.extend(id_params)
 
     query = f"SELECT * FROM jobs WHERE {where} ORDER BY fit_score DESC NULLS LAST, discovered_at DESC"
     if limit > 0:

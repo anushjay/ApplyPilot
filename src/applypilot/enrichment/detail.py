@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from applypilot.database import init_db
+from applypilot.database import init_db, job_id_filter_sql
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -803,6 +803,7 @@ def _run_detail_scraper(
     sites: list[str] | None = None,
     max_per_site: int | None = None,
     workers: int = 1,
+    job_ids: list[str] | None = None,
 ) -> dict:
     """Groups pending jobs by site and processes each batch.
 
@@ -813,9 +814,11 @@ def _run_detail_scraper(
     Returns aggregate stats dict.
     """
     skip_filter = " AND ".join(f"site != '{s}'" for s in SKIP_DETAIL_SITES)
-    where = f"WHERE ({DETAIL_PENDING_WHERE}) AND {skip_filter}"
+    id_filter, id_params = job_id_filter_sql(job_ids)
+    where = f"WHERE ({DETAIL_PENDING_WHERE}) AND {skip_filter}{id_filter}"
     rows = conn.execute(
-        f"SELECT url, title, site FROM jobs {where} ORDER BY site"
+        f"SELECT url, title, site FROM jobs {where} ORDER BY site",
+        id_params,
     ).fetchall()
 
     if not rows:
@@ -965,7 +968,7 @@ def stream_detail(
 
 # -- Public entry point ------------------------------------------------------
 
-def run_enrichment(limit: int = 100, workers: int = 1) -> dict:
+def run_enrichment(limit: int = 100, workers: int = 1, job_ids: list[str] | None = None) -> dict:
     """Main entry point for detail page enrichment.
 
     Fetches pending jobs from the database (those without full_description),
@@ -999,6 +1002,6 @@ def run_enrichment(limit: int = 100, workers: int = 1) -> dict:
             log.info("WTTJ: %d URLs updated", updated)
 
     # Run the detail scraper
-    stats = _run_detail_scraper(conn, max_per_site=limit, workers=workers)
+    stats = _run_detail_scraper(conn, max_per_site=limit, workers=workers, job_ids=job_ids)
 
     return stats

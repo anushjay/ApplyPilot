@@ -22,7 +22,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from applypilot.config import load_env, ensure_dirs
-from applypilot.database import init_db, get_connection, get_stats
+from applypilot.database import init_db, get_connection, get_stats, reset_jobs_for_stage
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -114,44 +114,52 @@ def _run_discover(workers: int = 1) -> dict:
     return stats
 
 
-def _run_enrich(workers: int = 1) -> dict:
+def _run_enrich(workers: int = 1, job_ids: list[str] | None = None) -> dict:
     """Stage: Detail enrichment — scrape full descriptions and apply URLs."""
     try:
         from applypilot.enrichment.detail import run_enrichment
-        run_enrichment(workers=workers)
+        run_enrichment(workers=workers, job_ids=job_ids)
         return {"status": "ok"}
     except Exception as e:
         log.error("Enrichment failed: %s", e)
         return {"status": f"error: {e}"}
 
 
-def _run_score() -> dict:
+def _run_score(job_ids: list[str] | None = None) -> dict:
     """Stage: LLM scoring — assign fit scores 1-10."""
     try:
         from applypilot.scoring.scorer import run_scoring
-        run_scoring()
+        run_scoring(job_ids=job_ids)
         return {"status": "ok"}
     except Exception as e:
         log.error("Scoring failed: %s", e)
         return {"status": f"error: {e}"}
 
 
-def _run_tailor(min_score: int = 7, validation_mode: str = "normal") -> dict:
+def _run_tailor(
+    min_score: int = 7,
+    validation_mode: str = "normal",
+    job_ids: list[str] | None = None,
+) -> dict:
     """Stage: Resume tailoring — generate tailored resumes for high-fit jobs."""
     try:
         from applypilot.scoring.tailor import run_tailoring
-        run_tailoring(min_score=min_score, validation_mode=validation_mode)
+        run_tailoring(min_score=min_score, validation_mode=validation_mode, job_ids=job_ids)
         return {"status": "ok"}
     except Exception as e:
         log.error("Tailoring failed: %s", e)
         return {"status": f"error: {e}"}
 
 
-def _run_cover(min_score: int = 7, validation_mode: str = "normal") -> dict:
+def _run_cover(
+    min_score: int = 7,
+    validation_mode: str = "normal",
+    job_ids: list[str] | None = None,
+) -> dict:
     """Stage: Cover letter generation."""
     try:
         from applypilot.scoring.cover_letter import run_cover_letters
-        run_cover_letters(min_score=min_score, validation_mode=validation_mode)
+        run_cover_letters(min_score=min_score, validation_mode=validation_mode, job_ids=job_ids)
         return {"status": "ok"}
     except Exception as e:
         log.error("Cover letter generation failed: %s", e)
@@ -338,8 +346,13 @@ def _run_stage_streaming(
 # Pipeline orchestrators
 # ---------------------------------------------------------------------------
 
-def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
-                    validation_mode: str = "normal") -> dict:
+def _run_sequential(
+    ordered: list[str],
+    min_score: int,
+    workers: int = 1,
+    validation_mode: str = "normal",
+    job_ids: list[str] | None = None,
+) -> dict:
     """Execute stages one at a time (original behavior)."""
     results: list[dict] = []
     errors: dict[str, str] = {}
@@ -362,6 +375,8 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
                 kwargs["validation_mode"] = validation_mode
             if name in ("discover", "enrich"):
                 kwargs["workers"] = workers
+            if name in ("enrich", "score", "tailor", "cover"):
+                kwargs["job_ids"] = job_ids
             result = runner(**kwargs)
             elapsed = time.time() - t0
 
@@ -463,6 +478,8 @@ def run_pipeline(
     stream: bool = False,
     workers: int = 1,
     validation_mode: str = "normal",
+    job_ids: list[str] | None = None,
+    force: bool = False,
 ) -> dict:
     """Run pipeline stages.
 
@@ -485,6 +502,12 @@ def run_pipeline(
     if stages is None:
         stages = ["all"]
     ordered = _resolve_stages(stages)
+    if job_ids and "discover" in ordered:
+        ordered = [stage for stage in ordered if stage != "discover"]
+        console.print("[yellow]Skipping targeted discover.[/yellow] Use 'applypilot jobs add URL' to import one job.")
+    if job_ids and stream:
+        stream = False
+        console.print("[yellow]Targeted runs use sequential mode; ignoring --stream.[/yellow]")
 
     # Banner
     mode = "streaming" if stream else "sequential"
@@ -497,6 +520,10 @@ def run_pipeline(
     console.print(f"  Workers:    {workers}")
     console.print(f"  Validation: {validation_mode}")
     console.print(f"  Stages:     {' -> '.join(ordered)}")
+    if job_ids:
+        console.print(f"  Targets:    {len(job_ids)} job(s)")
+    if force:
+        console.print("  Force:      yes")
 
     # Pre-run stats
     pre_stats = get_stats()
@@ -510,13 +537,25 @@ def run_pipeline(
         console.print("\n  No changes made.")
         return {"stages": [], "errors": {}, "elapsed": 0.0}
 
+    if force and job_ids:
+        conn = get_connection()
+        for name in ordered:
+            if name in ("enrich", "score", "tailor", "cover"):
+                reset_count = reset_jobs_for_stage(conn, name, job_ids)
+                console.print(f"  [yellow]Reset {reset_count} job(s) for stage:[/yellow] {name}")
+
     # Execute
     if stream:
         result = _run_streaming(ordered, min_score, workers=workers,
                                 validation_mode=validation_mode)
     else:
-        result = _run_sequential(ordered, min_score, workers=workers,
-                                 validation_mode=validation_mode)
+        result = _run_sequential(
+            ordered,
+            min_score,
+            workers=workers,
+            validation_mode=validation_mode,
+            job_ids=job_ids,
+        )
 
     # Summary table
     console.print(f"\n{'=' * 70}")
