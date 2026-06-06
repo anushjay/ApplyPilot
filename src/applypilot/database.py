@@ -68,7 +68,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     Schema columns by stage:
       - Discovery:  url, title, salary, description, location, site, strategy, discovered_at
       - Enrichment: full_description, application_url, detail_scraped_at, detail_error
-      - Scoring:    fit_score, score_reasoning, scored_at
+      - Scoring:    fit_score, score_reasoning, scored_at plus local/cloud metadata
       - Tailoring:  tailored_resume_path, tailored_at, tailor_attempts
       - Cover:      cover_letter_path, cover_letter_at, cover_attempts
       - Apply:      applied_at, apply_status, apply_error, apply_attempts,
@@ -109,6 +109,15 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             fit_score             INTEGER,
             score_reasoning       TEXT,
             scored_at             TEXT,
+            local_fit_score       INTEGER,
+            local_score_reasoning TEXT,
+            local_scored_at       TEXT,
+            local_score_error     TEXT,
+            cloud_fit_score       INTEGER,
+            cloud_score_reasoning TEXT,
+            cloud_validated_at    TEXT,
+            cloud_validation_status TEXT,
+            cloud_validation_error TEXT,
 
             -- Tailoring stage (resume tailor)
             tailored_resume_path  TEXT,
@@ -162,6 +171,15 @@ _ALL_COLUMNS: dict[str, str] = {
     "fit_score": "INTEGER",
     "score_reasoning": "TEXT",
     "scored_at": "TEXT",
+    "local_fit_score": "INTEGER",
+    "local_score_reasoning": "TEXT",
+    "local_scored_at": "TEXT",
+    "local_score_error": "TEXT",
+    "cloud_fit_score": "INTEGER",
+    "cloud_score_reasoning": "TEXT",
+    "cloud_validated_at": "TEXT",
+    "cloud_validation_status": "TEXT",
+    "cloud_validation_error": "TEXT",
     # Tailoring
     "tailored_resume_path": "TEXT",
     "tailored_at": "TEXT",

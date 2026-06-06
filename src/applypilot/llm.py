@@ -7,6 +7,7 @@ Auto-detects provider from environment:
   LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
+Cloud validation uses CLOUD_LLM_PROVIDER and CLOUD_LLM_MODEL explicitly.
 """
 
 import logging
@@ -61,6 +62,43 @@ def _detect_provider() -> tuple[str, str, str]:
         "No LLM provider configured. "
         "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
     )
+
+
+def _detect_cloud_provider() -> tuple[str, str, str]:
+    """Return an explicit cloud provider client for hybrid score validation."""
+    provider = os.environ.get("CLOUD_LLM_PROVIDER", "").strip().lower()
+    model_override = os.environ.get("CLOUD_LLM_MODEL", "").strip()
+
+    if not provider:
+        raise RuntimeError(
+            "No cloud LLM provider configured. "
+            "Set CLOUD_LLM_PROVIDER=gemini|openai and CLOUD_LLM_MODEL."
+        )
+
+    from applypilot import config
+    config.require_cloud_llm_allowed(f"{provider} cloud validation")
+
+    if provider == "gemini":
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("CLOUD_LLM_PROVIDER=gemini requires GEMINI_API_KEY.")
+        return (
+            _GEMINI_COMPAT_BASE,
+            model_override or "gemini-2.0-flash",
+            api_key,
+        )
+
+    if provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("CLOUD_LLM_PROVIDER=openai requires OPENAI_API_KEY.")
+        return (
+            "https://api.openai.com/v1",
+            model_override or "gpt-4o-mini",
+            api_key,
+        )
+
+    raise RuntimeError("CLOUD_LLM_PROVIDER must be 'gemini' or 'openai'.")
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +327,7 @@ class _GeminiCompatForbidden(Exception):
 # ---------------------------------------------------------------------------
 
 _instance: LLMClient | None = None
+_cloud_instance: LLMClient | None = None
 
 
 def get_client() -> LLMClient:
@@ -299,3 +338,13 @@ def get_client() -> LLMClient:
         log.info("LLM provider: %s  model: %s", base_url, model)
         _instance = LLMClient(base_url, model, api_key)
     return _instance
+
+
+def get_cloud_client() -> LLMClient:
+    """Return an explicit cloud LLM client for score validation."""
+    global _cloud_instance
+    if _cloud_instance is None:
+        base_url, model, api_key = _detect_cloud_provider()
+        log.info("Cloud LLM provider: %s  model: %s", base_url, model)
+        _cloud_instance = LLMClient(base_url, model, api_key)
+    return _cloud_instance

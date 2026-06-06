@@ -61,6 +61,26 @@ def test_cloud_llm_fails_closed_without_explicit_opt_in(monkeypatch):
         llm.get_client()
 
 
+def test_cloud_validation_client_uses_explicit_cloud_provider(monkeypatch):
+    from applypilot import llm
+
+    monkeypatch.setenv("APPLYPILOT_ALLOW_CLOUD_LLM", "1")
+    monkeypatch.setenv("CLOUD_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("CLOUD_LLM_MODEL", "gpt-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret-key")
+    monkeypatch.setenv("LLM_URL", "http://localhost:11434/v1")
+    llm._cloud_instance = None
+
+    client = llm.get_cloud_client()
+    try:
+        assert client.base_url == "https://api.openai.com/v1"
+        assert client.model == "gpt-test"
+        assert client.api_key == "openai-secret-key"
+    finally:
+        client.close()
+        llm._cloud_instance = None
+
+
 def test_mcp_config_is_pinned_and_gmail_absent_by_default(monkeypatch):
     from applypilot.apply.launcher import _make_mcp_config
 
