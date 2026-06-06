@@ -151,7 +151,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
         location = escape(j["location"] or "")
         site = escape(j["site"] or "")
         site_color = colors.get(j["site"] or "", "#6b7280")
-        apply_url = escape(j["application_url"] or "")
+        apply_url = escape(j["application_url"] or j["url"] or "")
 
         # Parse keywords and reasoning from score_reasoning
         reasoning_raw = j["score_reasoning"] or ""

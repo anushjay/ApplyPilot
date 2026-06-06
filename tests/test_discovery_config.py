@@ -88,3 +88,77 @@ def test_discovery_sources_accepts_legacy_smartextract_key():
     from applypilot import config
 
     assert config.discovery_sources({"discovery_sources": {"smartextract": False}})["smart_extract"] is False
+
+
+def test_stats_count_missing_application_url_as_pending_detail(tmp_path):
+    from applypilot.database import get_stats, init_db
+
+    conn = init_db(tmp_path / "jobs.sqlite")
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            url, title, site, full_description, detail_scraped_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            "https://www.linkedin.com/jobs/view/123",
+            "Partner Manager",
+            "linkedin",
+            "Full description",
+            "2026-06-06T00:00:00+00:00",
+        ),
+    )
+    conn.commit()
+
+    stats = get_stats(conn)
+
+    assert stats["pending_detail"] == 1
+
+
+def test_ready_to_apply_allows_job_url_fallback(tmp_path):
+    from applypilot.database import get_jobs_by_stage, get_stats, init_db
+
+    conn = init_db(tmp_path / "jobs.sqlite")
+    conn.execute(
+        """
+        INSERT INTO jobs (
+            url, title, site, fit_score, tailored_resume_path
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            "https://www.linkedin.com/jobs/view/123",
+            "Partner Manager",
+            "linkedin",
+            9,
+            "/tmp/resume.txt",
+        ),
+    )
+    conn.commit()
+
+    stats = get_stats(conn)
+    pending_apply = get_jobs_by_stage(conn=conn, stage="pending_apply")
+
+    assert stats["ready_to_apply"] == 1
+    assert len(pending_apply) == 1
+
+
+def test_normalize_application_url_rejects_linkedin_signup_redirect():
+    from applypilot.enrichment.detail import normalize_application_url
+
+    raw = (
+        "https://www.linkedin.com/signup/cold-join"
+        "?source=jobs_registration"
+        "&session_redirect=https%3A%2F%2Fwww.linkedin.com%2Fjobs%2Fview%2F123"
+    )
+
+    assert normalize_application_url("https://www.linkedin.com/jobs/view/123", raw) is None
+
+
+def test_normalize_application_url_keeps_company_apply_url():
+    from applypilot.enrichment.detail import normalize_application_url
+
+    raw = "https://boards.greenhouse.io/company/jobs/123"
+
+    assert normalize_application_url("https://www.linkedin.com/jobs/view/123", raw) == raw

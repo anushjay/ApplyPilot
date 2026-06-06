@@ -139,7 +139,9 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     if isinstance(data["experience"], list):
         for company in preserved_companies:
             has_company = any(
-                company.lower() in str(e.get("header", "")).lower()
+                company.lower() in " ".join(
+                    str(e.get(field, "")) for field in ("header", "subtitle")
+                ).lower()
                 for e in data["experience"]
             )
             if not has_company:

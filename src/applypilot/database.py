@@ -102,6 +102,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             -- Enrichment stage (detail_scraper)
             full_description      TEXT,
             application_url       TEXT,
+            application_url_checked_at TEXT,
             detail_scraped_at     TEXT,
             detail_error          TEXT,
 
@@ -165,6 +166,7 @@ _ALL_COLUMNS: dict[str, str] = {
     # Enrichment
     "full_description": "TEXT",
     "application_url": "TEXT",
+    "application_url_checked_at": "TEXT",
     "detail_scraped_at": "TEXT",
     "detail_error": "TEXT",
     # Scoring
@@ -268,7 +270,10 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
 
     # Enrichment stage
     stats["pending_detail"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL"
+        "SELECT COUNT(*) FROM jobs "
+        "WHERE detail_scraped_at IS NULL "
+        "OR ((application_url IS NULL OR application_url = '') "
+        "AND application_url_checked_at IS NULL)"
     ).fetchone()[0]
 
     stats["with_description"] = conn.execute(
@@ -338,7 +343,7 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
         "SELECT COUNT(*) FROM jobs "
         "WHERE tailored_resume_path IS NOT NULL "
         "AND applied_at IS NULL "
-        "AND application_url IS NOT NULL"
+        "AND (application_url IS NOT NULL OR url IS NOT NULL)"
     ).fetchone()[0]
 
     return stats
@@ -400,7 +405,11 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
 
     conditions = {
         "discovered": "1=1",
-        "pending_detail": "detail_scraped_at IS NULL",
+        "pending_detail": (
+            "detail_scraped_at IS NULL "
+            "OR ((application_url IS NULL OR application_url = '') "
+            "AND application_url_checked_at IS NULL)"
+        ),
         "enriched": "full_description IS NOT NULL",
         "pending_score": "full_description IS NOT NULL AND fit_score IS NULL",
         "scored": "fit_score IS NOT NULL",
@@ -411,7 +420,7 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
         "tailored": "tailored_resume_path IS NOT NULL",
         "pending_apply": (
             "tailored_resume_path IS NOT NULL AND applied_at IS NULL "
-            "AND application_url IS NOT NULL"
+            "AND (application_url IS NOT NULL OR url IS NOT NULL)"
         ),
         "applied": "applied_at IS NOT NULL",
     }

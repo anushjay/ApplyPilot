@@ -17,9 +17,10 @@ import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from applypilot.database import init_db
@@ -31,6 +32,12 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 # Sites that block scraping -- skip detail extraction entirely
 SKIP_DETAIL_SITES = {"glassdoor", "google", "Workopolis"}
+
+DETAIL_PENDING_WHERE = (
+    "detail_scraped_at IS NULL "
+    "OR ((application_url IS NULL OR application_url = '') "
+    "AND application_url_checked_at IS NULL)"
+)
 
 # Module-level proxy config (set from CLI or caller)
 _PROXY_CONFIG: dict | None = None
@@ -267,7 +274,7 @@ def extract_from_json_ld(intel: dict) -> dict | None:
 
         return {
             "full_description": desc_clean,
-            "application_url": apply_url,
+            "application_url": normalize_application_url("", apply_url),
         }
 
     return None
@@ -320,13 +327,19 @@ DESCRIPTION_SELECTORS = [
 
 def extract_apply_url_deterministic(page) -> str | None:
     """Try known CSS patterns for apply buttons/links."""
+    linkedin_apply = extract_linkedin_apply_url(page)
+    if linkedin_apply:
+        return linkedin_apply
+
     for sel in APPLY_SELECTORS:
         try:
             el = page.query_selector(sel)
             if el:
                 href = el.get_attribute("href")
                 if href and href != "#":
-                    return href
+                    apply_url = normalize_application_url(page.url, href)
+                    if apply_url:
+                        return apply_url
                 tag = el.evaluate("el => el.tagName.toLowerCase()")
                 if tag == "button":
                     parent_href = el.evaluate("el => el.parentElement?.querySelector('a')?.href || null")
@@ -343,9 +356,105 @@ def extract_apply_url_deterministic(page) -> str | None:
             if "apply" in text and len(text) < 50:
                 href = link.get_attribute("href")
                 if href and href != "#" and "javascript:" not in href:
-                    return href
+                    apply_url = normalize_application_url(page.url, href)
+                    if apply_url:
+                        return apply_url
     except Exception:
         pass
+
+    return None
+
+
+def normalize_application_url(page_url: str, apply_url: str | None) -> str | None:
+    """Return an absolute usable apply URL, rejecting auth/signup traps."""
+    if not apply_url:
+        return None
+    absolute = urljoin(page_url, apply_url)
+    try:
+        parsed = urlparse(absolute)
+    except Exception:
+        return None
+
+    if "linkedin.com" in parsed.netloc:
+        path = parsed.path.lower()
+        query = parsed.query.lower()
+        if (
+            path.startswith("/signup")
+            or path.startswith("/login")
+            or path.startswith("/uas/login")
+            or "session_redirect=" in query
+            or "jobs_registration" in query
+        ):
+            return None
+
+    return absolute
+
+
+def extract_linkedin_apply_url(page) -> str | None:
+    """Extract LinkedIn's external apply destination when available.
+
+    LinkedIn often renders external apply as a button rather than a plain link.
+    For non-Easy-Apply postings, clicking it can open the company application
+    page in a new tab. Easy Apply modals intentionally return None.
+    """
+    try:
+        parsed = urlparse(page.url)
+    except Exception:
+        return None
+    if "linkedin.com" not in parsed.netloc:
+        return None
+
+    link_selectors = [
+        'a.jobs-apply-button',
+        'a[data-control-name*="apply"]',
+        'a[href*="/jobs/apply"]',
+        'a[href*="externalApply"]',
+    ]
+    for sel in link_selectors:
+        try:
+            el = page.query_selector(sel)
+            if not el:
+                continue
+            href = el.get_attribute("href")
+            if href and href != "#":
+                apply_url = normalize_application_url(page.url, href)
+                if apply_url:
+                    return apply_url
+        except Exception:
+            continue
+
+    button_selectors = [
+        'button.jobs-apply-button',
+        'button[aria-label*="Apply"]',
+        'button:has-text("Apply")',
+    ]
+    for sel in button_selectors:
+        try:
+            locator = page.locator(sel).first
+            if locator.count() == 0:
+                continue
+            text = locator.inner_text(timeout=2000).strip().lower()
+            if "easy apply" in text:
+                return None
+
+            before_url = page.url
+            try:
+                with page.context.expect_page(timeout=5000) as popup_info:
+                    locator.click(timeout=5000)
+                popup = popup_info.value
+                popup.wait_for_load_state("domcontentloaded", timeout=10000)
+                popup_url = normalize_application_url(page.url, popup.url)
+                popup.close()
+                if popup_url and "linkedin.com" not in urlparse(popup_url).netloc:
+                    return popup_url
+            except PlaywrightTimeoutError:
+                locator.click(timeout=5000)
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+                apply_url = normalize_application_url(before_url, page.url)
+                if apply_url and page.url != before_url and "linkedin.com" not in urlparse(apply_url).netloc:
+                    return apply_url
+        except Exception:
+            continue
 
     return None
 
@@ -470,7 +579,7 @@ def extract_with_llm(page, url: str) -> dict:
         from applypilot.discovery.smartextract import extract_json
         result = extract_json(raw)
         desc = result.get("full_description")
-        apply_url = result.get("application_url")
+        apply_url = normalize_application_url(url, result.get("application_url"))
 
         if desc:
             desc = clean_description(desc)
@@ -589,7 +698,7 @@ def scrape_detail_page(page, url: str) -> dict:
     # Tier 3: LLM
     llm_result = extract_with_llm(page, url)
     result["full_description"] = llm_result.get("full_description")
-    result["application_url"] = llm_result.get("application_url") or tier2_apply
+    result["application_url"] = normalize_application_url(url, llm_result.get("application_url")) or tier2_apply
     result["tier_used"] = 3
 
     if result.get("full_description"):
@@ -662,15 +771,18 @@ def scrape_site_batch(
                 if status in ("ok", "partial"):
                     stats[status] += 1
                     conn.execute(
-                        "UPDATE jobs SET full_description = ?, application_url = ?, "
+                        "UPDATE jobs SET full_description = COALESCE(?, full_description), "
+                        "application_url = COALESCE(?, application_url), "
+                        "application_url_checked_at = ?, "
                         "detail_scraped_at = ?, detail_error = NULL WHERE url = ?",
-                        (result.get("full_description"), result.get("application_url"), now, url),
+                        (result.get("full_description"), result.get("application_url"), now, now, url),
                     )
                 else:
                     stats["error"] += 1
                     conn.execute(
-                        "UPDATE jobs SET detail_error = ?, detail_scraped_at = ? WHERE url = ?",
-                        (result.get("error", "unknown"), now, url),
+                        "UPDATE jobs SET detail_error = ?, detail_scraped_at = ?, "
+                        "application_url_checked_at = ? WHERE url = ?",
+                        (result.get("error", "unknown"), now, now, url),
                     )
 
                 conn.commit()
@@ -701,7 +813,7 @@ def _run_detail_scraper(
     Returns aggregate stats dict.
     """
     skip_filter = " AND ".join(f"site != '{s}'" for s in SKIP_DETAIL_SITES)
-    where = f"WHERE detail_scraped_at IS NULL AND {skip_filter}"
+    where = f"WHERE ({DETAIL_PENDING_WHERE}) AND {skip_filter}"
     rows = conn.execute(
         f"SELECT url, title, site FROM jobs {where} ORDER BY site"
     ).fetchall()
@@ -815,7 +927,7 @@ def stream_detail(
             skip_filter = " AND ".join(f"site != '{s}'" for s in SKIP_DETAIL_SITES)
             rows = conn.execute(
                 "SELECT url, title, site FROM jobs "
-                f"WHERE detail_scraped_at IS NULL AND {skip_filter} "
+                f"WHERE ({DETAIL_PENDING_WHERE}) AND {skip_filter} "
                 "ORDER BY site LIMIT 200"
             ).fetchall()
 

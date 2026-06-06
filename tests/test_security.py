@@ -81,6 +81,80 @@ def test_cloud_validation_client_uses_explicit_cloud_provider(monkeypatch):
         llm._cloud_instance = None
 
 
+def test_resume_validator_accepts_preserved_company_in_subtitle():
+    from applypilot.scoring.validator import validate_json_fields
+
+    profile = {
+        "resume_facts": {
+            "preserved_companies": ["New Relic", "Splunk"],
+            "preserved_school": "New Jersey Institute of Technology",
+        }
+    }
+    data = {
+        "title": "Senior Partner Manager, AWS",
+        "summary": "Partnerships leader with cloud GTM experience.",
+        "skills": {"Tools": "AWS, Azure"},
+        "experience": [
+            {
+                "header": "Director, ISV and Cloud Partnerships",
+                "subtitle": "New Relic | 2025-Present",
+                "bullets": ["Led cloud partnerships."],
+            },
+            {
+                "header": "Director, Technology Partnerships",
+                "subtitle": "Splunk | 2021-2025",
+                "bullets": ["Scaled partner programs."],
+            },
+        ],
+        "projects": [
+            {
+                "header": "Partner Enablement Programs",
+                "subtitle": "AWS | 2021-2025",
+                "bullets": ["Built partner enablement programs."],
+            }
+        ],
+        "education": "New Jersey Institute of Technology | Master's Degree",
+    }
+
+    result = validate_json_fields(data, profile)
+
+    assert result["passed"] is True
+
+
+def test_resume_assembler_uses_profile_title_not_llm_title():
+    from applypilot.scoring.tailor import assemble_resume_text
+
+    profile = {
+        "personal": {"full_name": "Test Candidate", "email": "test@example.com"},
+        "experience": {"current_job_title": "Director, Technology Partnerships"},
+    }
+    data = {
+        "title": "Senior Partner Manager",
+        "summary": "Partnerships leader.",
+        "skills": {"Tools": "AWS"},
+        "experience": [
+            {
+                "header": "Director, Technology Partnerships",
+                "subtitle": "Splunk | 2021-2025",
+                "bullets": ["Led partnerships."],
+            }
+        ],
+        "projects": [
+            {
+                "header": "Partner Program",
+                "subtitle": "AWS | 2021-2025",
+                "bullets": ["Built enablement."],
+            }
+        ],
+        "education": "School | Degree",
+    }
+
+    rendered = assemble_resume_text(data, profile).splitlines()
+
+    assert rendered[1] == "Director, Technology Partnerships"
+    assert "Senior Partner Manager" not in rendered[:3]
+
+
 def test_mcp_config_is_pinned_and_gmail_absent_by_default(monkeypatch):
     from applypilot.apply.launcher import _make_mcp_config
 
