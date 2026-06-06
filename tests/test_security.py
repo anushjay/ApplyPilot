@@ -323,6 +323,119 @@ def test_prompt_can_upload_default_resume_pdf(tmp_path, monkeypatch):
     assert "Default resume text" in built
 
 
+def test_prompt_can_upload_custom_resume_pdf_path(tmp_path, monkeypatch):
+    from applypilot import config
+    from applypilot.apply import prompt
+
+    app_dir = tmp_path / "app"
+    resume_pdf = tmp_path / "custom_resume.pdf"
+    resume_pdf.write_bytes(b"%PDF-1.4 custom\n")
+    profile_path = app_dir / "profile.json"
+    search_path = app_dir / "searches.yaml"
+    app_dir.mkdir(parents=True)
+    profile_path.write_text(json.dumps(_profile()), encoding="utf-8")
+    search_path.write_text("location: {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "APP_DIR", app_dir)
+    monkeypatch.setattr(config, "PROFILE_PATH", profile_path)
+    monkeypatch.setattr(config, "SEARCH_CONFIG_PATH", search_path)
+    monkeypatch.setattr(config, "APPLY_WORKER_DIR", app_dir / "apply-workers")
+
+    built = prompt.build_prompt(
+        {
+            "url": "https://example.com/job",
+            "title": "Software Engineer",
+            "site": "Example",
+            "fit_score": 8,
+            "application_url": "https://example.com/apply",
+        },
+        tailored_resume="Custom resume text",
+        dry_run=True,
+        resume_mode=str(resume_pdf),
+    )
+
+    upload_pdf = app_dir / "apply-workers" / "current" / "Test_Candidate_Resume.pdf"
+    assert upload_pdf.exists()
+    assert upload_pdf.read_bytes() == b"%PDF-1.4 custom\n"
+    assert f"Resume PDF (upload this): {upload_pdf}" in built
+
+
+def test_apply_reads_custom_resume_text_sibling(tmp_path):
+    from applypilot.apply.launcher import _read_resume_text
+
+    resume_pdf = tmp_path / "custom_resume.pdf"
+    resume_txt = tmp_path / "custom_resume.txt"
+    resume_pdf.write_bytes(b"%PDF-1.4 custom\n")
+    resume_txt.write_text("Custom resume text", encoding="utf-8")
+
+    assert _read_resume_text({}, resume_mode=str(resume_pdf)) == "Custom resume text"
+    assert _read_resume_text({}, resume_mode=str(resume_txt)) == "Custom resume text"
+
+
+def test_prompt_generates_cloud_cover_letter_when_missing(tmp_path, monkeypatch):
+    from applypilot import config
+    from applypilot import database
+    from applypilot.apply import prompt
+    from applypilot.database import init_db
+
+    class FakeCloudClient:
+        def chat(self, messages, max_tokens=1024, temperature=0.7):
+            return (
+                "Dear Hiring Manager,\n\n"
+                "Built partner systems with AWS and APIs for measurable outcomes.\n\n"
+                "Test"
+            )
+
+    def fake_convert_to_pdf(path):
+        pdf_path = path.with_suffix(".pdf")
+        pdf_path.write_bytes(b"%PDF-1.4 cover\n")
+        return pdf_path
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir(parents=True)
+    default_pdf = app_dir / "resume.pdf"
+    default_pdf.write_bytes(b"%PDF-1.4 default\n")
+    profile_path = app_dir / "profile.json"
+    search_path = app_dir / "searches.yaml"
+    db_path = app_dir / "applypilot.db"
+    profile_path.write_text(json.dumps(_profile()), encoding="utf-8")
+    search_path.write_text("location: {}\n", encoding="utf-8")
+
+    monkeypatch.setattr(config, "APP_DIR", app_dir)
+    monkeypatch.setattr(config, "PROFILE_PATH", profile_path)
+    monkeypatch.setattr(config, "SEARCH_CONFIG_PATH", search_path)
+    monkeypatch.setattr(config, "RESUME_PDF_PATH", default_pdf)
+    monkeypatch.setattr(config, "COVER_LETTER_DIR", app_dir / "cover_letters")
+    monkeypatch.setattr(config, "APPLY_WORKER_DIR", app_dir / "apply-workers")
+    monkeypatch.setattr(config, "DB_PATH", db_path)
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    monkeypatch.setattr("applypilot.llm.get_cloud_client", lambda: FakeCloudClient())
+    monkeypatch.setattr("applypilot.scoring.pdf.convert_to_pdf", fake_convert_to_pdf)
+
+    config.COVER_LETTER_DIR.mkdir(parents=True)
+    init_db(db_path)
+
+    built = prompt.build_prompt(
+        {
+            "url": "https://example.com/job",
+            "title": "Partner Manager",
+            "site": "Example",
+            "fit_score": 8,
+            "application_url": "https://example.com/apply",
+            "full_description": "Partner role working with AWS and API ecosystems.",
+        },
+        tailored_resume="Default resume text with AWS and APIs.",
+        dry_run=True,
+        resume_mode="default",
+    )
+
+    generated = list(config.COVER_LETTER_DIR.glob("*_CL.txt"))
+    assert len(generated) == 1
+    assert "Built partner systems with AWS and APIs" in generated[0].read_text(encoding="utf-8")
+    assert "Built partner systems with AWS and APIs" in built
+    assert "Cover Letter PDF (upload if asked):" in built
+
+
 def test_apply_default_resume_mode_does_not_require_tailored_resume(tmp_path, monkeypatch):
     from applypilot import config
     from applypilot import database

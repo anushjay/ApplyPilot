@@ -7,13 +7,122 @@ personal data is loaded from the user's profile -- nothing is hardcoded.
 
 import logging
 import os
+import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from applypilot import config
 
 logger = logging.getLogger(__name__)
+
+
+def _copy_cover_letter_pdf(src_pdf: Path, dest_dir: Path, name_slug: str) -> str:
+    cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
+    shutil.copy(str(src_pdf), str(cl_upload))
+    try:
+        cl_upload.chmod(0o600)
+    except OSError:
+        pass
+    return str(cl_upload)
+
+
+def _resolve_resume_pdf(job: dict, resume_mode: str) -> Path:
+    if resume_mode == "default":
+        src_pdf = config.RESUME_PDF_PATH.resolve()
+        if not src_pdf.exists():
+            raise ValueError(
+                f"Default resume PDF not found: {src_pdf}. "
+                "Add ~/.applypilot/resume.pdf or use --resume-mode tailored."
+            )
+        return src_pdf
+
+    if resume_mode == "tailored":
+        resume_path = job.get("tailored_resume_path")
+        if not resume_path:
+            raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
+        src_pdf = Path(resume_path).expanduser().with_suffix(".pdf").resolve()
+        if not src_pdf.exists():
+            raise ValueError(f"Resume PDF not found: {src_pdf}")
+        return src_pdf
+
+    resume_path = Path(resume_mode).expanduser()
+    if resume_path.suffix.lower() == ".pdf":
+        src_pdf = resume_path.resolve()
+    elif resume_path.suffix.lower() == ".txt":
+        src_pdf = resume_path.with_suffix(".pdf").resolve()
+    else:
+        raise ValueError(
+            f"Unsupported resume source: {resume_path}. Use a .pdf or .txt file."
+        )
+    if not src_pdf.exists():
+        raise ValueError(f"Resume PDF not found: {src_pdf}")
+    return src_pdf
+
+
+def _generate_cloud_cover_letter_for_apply(
+    job: dict,
+    resume_text: str,
+    profile: dict,
+) -> tuple[str, str]:
+    """Generate a cloud cover letter for apply-time fallback.
+
+    Returns:
+        Tuple of (cover_letter_text, cover_letter_pdf_path). Either can be
+        blank if generation or PDF conversion fails.
+    """
+    if not resume_text.strip() or not (job.get("full_description") or "").strip():
+        return "", ""
+
+    try:
+        from applypilot.database import get_connection
+        from applypilot.llm import get_cloud_client
+        from applypilot.scoring.cover_letter import generate_cover_letter
+        from applypilot.scoring.pdf import convert_to_pdf
+
+        client = get_cloud_client()
+        letter = generate_cover_letter(
+            resume_text,
+            job,
+            profile,
+            validation_mode="normal",
+            client=client,
+        )
+        if not letter.strip():
+            return "", ""
+
+        config.COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
+        safe_title = re.sub(r"[^\w\s-]", "", str(job.get("title", "")))[:50].strip().replace(" ", "_")
+        safe_site = re.sub(r"[^\w\s-]", "", str(job.get("site", "")))[:20].strip().replace(" ", "_")
+        prefix = f"{safe_site or 'unknown'}_{safe_title or 'job'}"
+        cl_path = config.COVER_LETTER_DIR / f"{prefix}_CL.txt"
+        config.secure_write_text(cl_path, letter)
+
+        pdf_path = ""
+        try:
+            pdf_path = str(convert_to_pdf(cl_path))
+        except Exception:
+            logger.debug("Apply-time cover letter PDF generation failed for %s", cl_path, exc_info=True)
+
+        try:
+            conn = get_connection()
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """
+                UPDATE jobs SET cover_letter_path=?, cover_letter_at=?,
+                       cover_attempts=COALESCE(cover_attempts,0)+1
+                WHERE url=?
+                """,
+                (str(cl_path), now, job.get("url")),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug("Failed to persist apply-time cover letter path", exc_info=True)
+
+        return letter, pdf_path
+    except Exception:
+        logger.debug("Apply-time cloud cover letter generation failed", exc_info=True)
+        return "", ""
 
 
 def _build_profile_summary(profile: dict) -> str:
@@ -438,8 +547,8 @@ def build_prompt(job: dict, tailored_resume: str,
         tailored_resume: Plain-text content of the tailored resume.
         cover_letter: Optional plain-text cover letter content.
         dry_run: If True, tell the agent not to click Submit.
-        resume_mode: "tailored" uploads the job-specific resume. "default"
-            uploads ~/.applypilot/resume.pdf.
+        resume_mode: "tailored" uploads the job-specific resume, "default"
+            uploads ~/.applypilot/resume.pdf, otherwise a .pdf/.txt path.
 
     Returns:
         Complete prompt string for the AI agent.
@@ -449,21 +558,7 @@ def build_prompt(job: dict, tailored_resume: str,
     personal = profile["personal"]
 
     # --- Resolve resume PDF path ---
-    if resume_mode == "default":
-        src_pdf = config.RESUME_PDF_PATH.resolve()
-        if not src_pdf.exists():
-            raise ValueError(
-                f"Default resume PDF not found: {src_pdf}. "
-                "Add ~/.applypilot/resume.pdf or use --resume-mode tailored."
-            )
-    else:
-        resume_path = job.get("tailored_resume_path")
-        if not resume_path:
-            raise ValueError(f"No tailored resume for job: {job.get('title', 'unknown')}")
-        src_pdf = Path(resume_path).with_suffix(".pdf").resolve()
-
-    if not src_pdf.exists():
-        raise ValueError(f"Resume PDF not found: {src_pdf}")
+    src_pdf = _resolve_resume_pdf(job, resume_mode)
 
     # Copy to a clean filename for upload (recruiters see the filename)
     full_name = personal["full_name"]
@@ -493,13 +588,18 @@ def build_prompt(job: dict, tailored_resume: str,
         # Upload must be PDF
         cl_pdf_src = cl_src.with_suffix(".pdf")
         if cl_pdf_src.exists():
-            cl_upload = dest_dir / f"{name_slug}_Cover_Letter.pdf"
-            shutil.copy(str(cl_pdf_src), str(cl_upload))
-            try:
-                cl_upload.chmod(0o600)
-            except OSError:
-                pass
-            cl_upload_path = str(cl_upload)
+            cl_upload_path = _copy_cover_letter_pdf(cl_pdf_src, dest_dir, name_slug)
+
+    if not cover_letter_text:
+        generated_text, generated_pdf = _generate_cloud_cover_letter_for_apply(
+            job,
+            tailored_resume,
+            profile,
+        )
+        if generated_text:
+            cover_letter_text = generated_text
+        if generated_pdf:
+            cl_upload_path = _copy_cover_letter_pdf(Path(generated_pdf), dest_dir, name_slug)
 
     # --- Build all prompt sections ---
     profile_summary = _build_profile_summary(profile)

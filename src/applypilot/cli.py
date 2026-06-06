@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -153,7 +154,7 @@ def apply(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     url: Optional[str] = typer.Option(None, "--url", help="Apply to a specific job URL."),
-    resume_mode: Optional[str] = typer.Option(None, "--resume-mode", help="Resume upload source: tailored or default. Env: APPLYPILOT_APPLY_RESUME_MODE."),
+    resume_mode: Optional[str] = typer.Option(None, "--resume-mode", help="Resume source: tailored, default, or path to .pdf/.txt. Env: APPLYPILOT_APPLY_RESUME_MODE."),
     gen: bool = typer.Option(False, "--gen", help="Generate prompt file for manual debugging instead of running."),
     mark_applied: Optional[str] = typer.Option(None, "--mark-applied", help="Manually mark a job URL as applied."),
     mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
@@ -191,9 +192,28 @@ def apply(
         return
 
     # --- Full apply mode ---
-    effective_resume_mode = (resume_mode or os.environ.get("APPLYPILOT_APPLY_RESUME_MODE") or "tailored").strip().lower()
-    if effective_resume_mode not in {"tailored", "default"}:
-        console.print("[red]Invalid --resume-mode.[/red] Use 'tailored' or 'default'.")
+    effective_resume_mode = (resume_mode or os.environ.get("APPLYPILOT_APPLY_RESUME_MODE") or "tailored").strip()
+    resume_mode_key = effective_resume_mode.lower()
+    if resume_mode_key in {"tailored", "default"}:
+        effective_resume_mode = resume_mode_key
+    else:
+        resume_path = Path(effective_resume_mode).expanduser()
+        if resume_path.suffix.lower() not in {".pdf", ".txt"}:
+            console.print("[red]Invalid --resume-mode.[/red] Use 'tailored', 'default', or a .pdf/.txt path.")
+            raise typer.Exit(code=1)
+        if not resume_path.exists():
+            console.print(f"[red]Resume file not found:[/red] {resume_path}")
+            raise typer.Exit(code=1)
+        if resume_path.suffix.lower() == ".txt" and not resume_path.with_suffix(".pdf").exists():
+            console.print(
+                f"[red]Resume PDF not found for TXT source.[/red]\n"
+                f"Expected: [bold]{resume_path.with_suffix('.pdf')}[/bold]"
+            )
+            raise typer.Exit(code=1)
+        effective_resume_mode = str(resume_path)
+
+    if not effective_resume_mode:
+        console.print("[red]Invalid --resume-mode.[/red] Use 'tailored', 'default', or a .pdf/.txt path.")
         raise typer.Exit(code=1)
 
     # Check 1: Tier 3 required (Claude Code CLI + Chrome)

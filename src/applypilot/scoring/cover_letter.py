@@ -119,6 +119,7 @@ def _strip_preamble(text: str) -> str:
 def generate_cover_letter(
     resume_text: str, job: dict, profile: dict,
     max_retries: int = 3, validation_mode: str = "normal",
+    client=None,
 ) -> str:
     """Generate a cover letter with fresh context on each retry + auto-sanitize.
 
@@ -131,6 +132,8 @@ def generate_cover_letter(
         profile:          User profile dict.
         max_retries:      Maximum retry attempts.
         validation_mode:  "strict", "normal", or "lenient".
+        client:           Optional LLM client. Defaults to the configured
+                          standard client.
 
     Returns:
         The cover letter text (best attempt even if validation failed).
@@ -144,7 +147,7 @@ def generate_cover_letter(
 
     avoid_notes: list[str] = []
     letter = ""
-    client = get_client()
+    llm_client = client or get_client()
     cl_prompt_base = _build_cover_letter_prompt(profile)
 
     for attempt in range(max_retries + 1):
@@ -164,7 +167,7 @@ def generate_cover_letter(
             )},
         ]
 
-        letter = client.chat(messages, max_tokens=1024, temperature=0.7)
+        letter = llm_client.chat(messages, max_tokens=1024, temperature=0.7)
         letter = sanitize_text(letter)  # auto-fix em dashes, smart quotes
         letter = _strip_preamble(letter)  # remove any "Here is the letter:" prefix
 

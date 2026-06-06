@@ -118,9 +118,9 @@ def acquire_job(target_url: str | None = None, min_score: int = 7,
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        resume_ready_clause = (
-            "1=1" if resume_mode == "default" else "tailored_resume_path IS NOT NULL"
-        )
+        resume_ready_clause = "tailored_resume_path IS NOT NULL"
+        if resume_mode != "tailored":
+            resume_ready_clause = "1=1"
 
         if target_url:
             like = f"%{target_url.split('?')[0].rstrip('/')}%"
@@ -323,6 +323,12 @@ def _read_resume_text(job: dict, resume_mode: str = "tailored") -> str:
     if resume_mode == "default":
         if config.RESUME_PATH.exists():
             return config.RESUME_PATH.read_text(encoding="utf-8")
+        return ""
+    if resume_mode != "tailored":
+        resume_path = Path(resume_mode).expanduser()
+        txt_path = resume_path if resume_path.suffix.lower() == ".txt" else resume_path.with_suffix(".txt")
+        if txt_path.exists():
+            return txt_path.read_text(encoding="utf-8")
         return ""
 
     resume_path = job.get("tailored_resume_path")
